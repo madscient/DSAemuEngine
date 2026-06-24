@@ -51,8 +51,8 @@ set(ENGINE_SOURCES
 
 # =======================================================
 #  共有ライブラリ
-#  出力ファイル名は FmEngineApi (FmEngineApi.dll / libFmEngineApi.so)
-#  とし、FMEngineTest がそのまま読み込めるようにする。
+#  出力ファイル名: DSAemuEngine.dll / libDSAemuEngine.so / libDSAemuEngine.dylib
+#  FMEngineTest から使う場合は -e オプションでパスを指定する。
 # =======================================================
 add_library(DSAemuEngine SHARED ${ENGINE_SOURCES} ${CORE_SOURCES})
 
@@ -73,7 +73,7 @@ target_compile_definitions(DSAemuEngine PRIVATE FMENGINE_EXPORTS)
 if(MSVC)
     target_compile_options(DSAemuEngine PRIVATE /W3 /utf-8)
     set_target_properties(DSAemuEngine PROPERTIES
-        OUTPUT_NAME              "FmEngineApi"
+        OUTPUT_NAME              "DSAemuEngine"
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
         ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
         PDB_OUTPUT_DIRECTORY     "${CMAKE_BINARY_DIR}/bin"
@@ -86,7 +86,7 @@ else()
     find_package(Threads REQUIRED)
     target_link_libraries(DSAemuEngine PRIVATE Threads::Threads)
     set_target_properties(DSAemuEngine PROPERTIES
-        OUTPUT_NAME              "FmEngineApi"
+        OUTPUT_NAME              "DSAemuEngine"
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     )
 endif()

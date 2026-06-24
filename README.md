@@ -62,8 +62,8 @@ git submodule update --init --recursive
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
-# 成果物: build/bin/libFmEngineApi.so  (Linux)
-#         build/bin/libFmEngineApi.dylib (macOS)
+# 成果物: build/bin/libDSAemuEngine.so  (Linux)
+#         build/bin/libDSAemuEngine.dylib (macOS)
 ```
 
 ### Windows (Visual Studio 2022)
@@ -71,7 +71,7 @@ cmake --build build --parallel
 ```cmd
 cmake -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
-:: 成果物: build\bin\FmEngineApi.dll
+:: 成果物: build\bin\DSAemuEngine.dll
 ```
 
 ## FMEngineTest との接続
@@ -81,11 +81,11 @@ cmake --build build --config Release
 
 ```bash
 # Linux の例
-cp build/bin/libFmEngineApi.so <FMEngineTest_dir>/
+cp build/bin/libDSAemuEngine.so <FMEngineTest_dir>/
 cd <FMEngineTest_dir>
-./FMEngineTest -e ./libFmEngineApi.so patches/ssg.json
-./FMEngineTest -e ./libFmEngineApi.so patches/opll.json
-./FMEngineTest -e ./libFmEngineApi.so patches/all.json
+./FMEngineTest -e ./libDSAemuEngine.so patches/ssg.json
+./FMEngineTest -e ./libDSAemuEngine.so patches/opll.json
+./FMEngineTest -e ./libDSAemuEngine.so patches/all.json
 ```
 
 ## チップ固有の注意事項
