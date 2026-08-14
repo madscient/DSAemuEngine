@@ -4,7 +4,7 @@
 //   emu2149  (YM2149/AY-3-8910 PSG)  → SSG チップ
 //   emu2413  (YM2413 OPLL)            → OPLL / OPLLP / OPLLX / VRC7 チップ
 //   emu8950  (Y8950/YM3526/YM3812)   → Y8950 / OPL / OPL2 チップ
-//   emu2212  (Konami SCC)             → SCC チップ
+//   emu2212  (Konami SCC)             → SCC / SCCP チップ
 //   emu76489 (SN76489 DCSG)          → DCSG チップ
 
 #include "FmEngineApi.h"
@@ -41,6 +41,7 @@ enum class ChipKind {
     OPL,    // emu8950  YM3526 (type=1)
     OPL2,   // emu8950  YM3812 (type=2)
     SCC,    // emu2212  Konami SCC
+    SCCP,   // emu2212  Konami SCC-I (SCC+)
     DCSG,   // emu76489 SN76489
 };
 
@@ -100,6 +101,7 @@ static const ChipDesc kChipTable[] = {
     { "OPL",   ChipKind::OPL,   3579545  },  // YM3526
     { "OPL2",  ChipKind::OPL2,  3579545  },  // YM3812
     { "SCC",   ChipKind::SCC,   3579545  },  // Konami SCC
+    { "SCCP",  ChipKind::SCCP,  3579545  },  // Konami SCC-I (SCC+)
     { "DCSG",  ChipKind::DCSG,  3579545  },  // SN76489
 };
 static constexpr uint32_t kChipCount = (uint32_t)(sizeof(kChipTable) / sizeof(kChipTable[0]));
@@ -132,8 +134,10 @@ static uint32_t nativeRate(const ChipEntry& c) {
     case ChipKind::OPL2:
         return c.clock / 72;
     case ChipKind::SCC:
-        // SCC: clk / (16*4) = clk/64 ≈ 55900 at 3.58MHz
-        return c.clock / 64;
+    case ChipKind::SCCP:
+        // emu2212 の内部ステップは clk/2 (sccstep)。
+        // 発音周波数 clk/(32*(N+1)) は 1波形サンプルあたり16ステップで導かれる
+        return c.clock / 2;
     case ChipKind::DCSG:
         // SN76489: clk / 16 ≈ 223722 at 3.58MHz
         return c.clock / 16;
@@ -210,11 +214,16 @@ static std::unique_ptr<ChipEntry> createChip(
         break;
 
     case ChipKind::SCC:
+    case ChipKind::SCCP:
         e->scc = SCC_new(e->clock, sample_rate);
         if (!e->scc) return nullptr;
-        SCC_set_type(e->scc, SCC_STANDARD);
+        SCC_set_type(e->scc, desc.kind == ChipKind::SCCP ? SCC_ENHANCED : SCC_STANDARD);
         SCC_set_quality(e->scc, 1);
         SCC_reset(e->scc);
+        // mode ($E0) は実機ではマッパー側 (0xBFFE/0xB000) の設定であり
+        // 音源レジスタ窓の外にあるため、チップ種別として生成時に固定する
+        if (desc.kind == ChipKind::SCCP)
+            SCC_writeReg(e->scc, 0xE0, 1);
         break;
 
     case ChipKind::DCSG:
@@ -250,9 +259,16 @@ static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val, uint32_t port) {
         OPL_writeReg(c.opl, reg, val);
         break;
     case ChipKind::SCC:
-        // SCC: アドレスは0xC000-0xFFFF範囲のオフセット扱い
-        // reg をそのままアドレスとして使う
-        SCC_write(c.scc, 0xC000 + reg, val);
+    case ChipKind::SCCP:
+        // SCC_write() は Z80 メモリ空間の絶対アドレスを取り base_adr/active に依存するため、
+        // レジスタ指向 API には内部レジスタマップ直叩きの writeReg を使う
+        // $00-9F:wave $C0-C9:freq $D0-D4:volume $E1:ch enable $E2:deformation
+        // 実機のレジスタ窓に存在しないものは受け付けない:
+        //   $E0     … emu2212 の合成レジスタ (mode はチップ種別で固定)
+        //   $80-$9F … CH4 独立波形は SCC-I のみ。SCC では CH3 と共有
+        if (reg == 0xE0) break;
+        if (c.kind == ChipKind::SCC && 0x80 <= reg && reg <= 0x9F) break;
+        SCC_writeReg(c.scc, reg, val);
         break;
     case ChipKind::DCSG:
         // SN76489はシリアルバイト形式 (reg は無視, val をそのまま writeIO)
@@ -283,7 +299,8 @@ static void chipCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
     case ChipKind::OPL2:
         OPL_calcStereo(c.opl, buf);
         break;
-    case ChipKind::SCC: {
+    case ChipKind::SCC:
+    case ChipKind::SCCP: {
         int16_t mono = SCC_calc(c.scc);
         buf[0] = buf[1] = (int32_t)mono;
         break;
