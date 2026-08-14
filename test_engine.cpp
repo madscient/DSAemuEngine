@@ -102,10 +102,23 @@ static void testSCC(const Api& a, FmEngineHandle eng, uint32_t id) {
     for (int i = 0; i < 32; i++) {
         a.Write(eng, id, (uint8_t)(0x00 + i), (uint8_t)(i * 4 - 64), 0);
     }
-    a.Write(eng, id, 0x40, 0x8D, 0); // CH0 freq_lo (A4≈440Hz @3.58MHz)
-    a.Write(eng, id, 0x41, 0x00, 0);
-    a.Write(eng, id, 0x50, 0x0F, 0); // CH0 vol
-    a.Write(eng, id, 0x54, 0x01, 0); // CH0 enable
+    // N = clk/(32*freq) - 1 = 3579545/(32*440) - 1 = 253 = 0x0FD
+    a.Write(eng, id, 0xC0, 0xFD, 0); // CH0 freq_lo
+    a.Write(eng, id, 0xC1, 0x00, 0); // CH0 freq_hi
+    a.Write(eng, id, 0xD0, 0x0F, 0); // CH0 vol
+    a.Write(eng, id, 0xE1, 0x01, 0); // CH0 のみ enable
+}
+
+// SCCP テスト: CH4 は SCC+ でのみ独立波形を持つ
+static void testSCCP(const Api& a, FmEngineHandle eng, uint32_t id) {
+    // CH4 waveform: 矩形波 ($80-$9F)
+    for (int i = 0; i < 32; i++) {
+        a.Write(eng, id, (uint8_t)(0x80 + i), (uint8_t)(i < 16 ? 63 : -64), 0);
+    }
+    a.Write(eng, id, 0xC8, 0xFD, 0); // CH4 freq_lo
+    a.Write(eng, id, 0xC9, 0x00, 0); // CH4 freq_hi
+    a.Write(eng, id, 0xD4, 0x0F, 0); // CH4 vol
+    a.Write(eng, id, 0xE1, 0x10, 0); // CH4 のみ enable
 }
 
 // DCSG (SN76489) テスト: CH0 tone 440Hz
@@ -151,6 +164,7 @@ int main(int argc, char* argv[]) {
         { "OPL",   testOPL   },
         { "OPL2",  testOPL   },
         { "SCC",   testSCC   },
+        { "SCCP",  testSCCP  },
         { "DCSG",  testDCSG  },
     };
 

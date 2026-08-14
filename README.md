@@ -11,7 +11,7 @@ Git submodule として統合した共有ライブラリ (DLL / .so / .dylib) �
 | `extern/emu2149`  | [emu2149](https://github.com/digital-sound-antiques/emu2149)   | YM2149 / AY-3-8910 | `SSG` |
 | `extern/emu2413`  | [emu2413](https://github.com/digital-sound-antiques/emu2413)   | YM2413 (OPLL)      | `OPLL` / `OPLLP` / `OPLLX` / `VRC7` |
 | `extern/emu8950`  | [emu8950](https://github.com/digital-sound-antiques/emu8950)   | Y8950 / YM3526 / YM3812 | `Y8950` / `OPL` / `OPL2` |
-| `extern/emu2212`  | [emu2212](https://github.com/digital-sound-antiques/emu2212)   | Konami SCC         | `SCC` |
+| `extern/emu2212`  | [emu2212](https://github.com/digital-sound-antiques/emu2212)   | Konami SCC / SCC-I | `SCC` / `SCCP` |
 | `extern/emu76489` | [emu76489](https://github.com/digital-sound-antiques/emu76489) | SN76489 (DCSG)     | `DCSG` |
 
 ## 対応チップ一覧
@@ -26,7 +26,8 @@ Git submodule として統合した共有ライブラリ (DLL / .so / .dylib) �
 | `Y8950` | Y8950 (ADPCM 対応)       | 3.580 MHz |  49,715 Hz |
 | `OPL`   | YM3526                   | 3.580 MHz |  49,715 Hz |
 | `OPL2`  | YM3812                   | 3.580 MHz |  49,715 Hz |
-| `SCC`   | Konami SCC               | 3.580 MHz |  55,930 Hz |
+| `SCC`   | Konami SCC               | 3.580 MHz | 1,789,772 Hz |
+| `SCCP`  | Konami SCC-I (SCC+)      | 3.580 MHz | 1,789,772 Hz |
 | `DCSG`  | SN76489                  | 3.580 MHz | 223,721 Hz |
 
 ## ファイル構成
@@ -99,15 +100,26 @@ cd <FMEngineTest_dir>
 ADPCM データは `FmEngine_SetMemory(chip_id, FM_MEM_ADPCM_B, data, size)` で
 書き込みます。
 
-### SCC
-アドレスは `0xC000 + reg` にマッピングされます。
+### SCC / SCCP
+`reg` は Z80 メモリアドレスではなく、チップのレジスタ番号を直接指定します。
 
-| オフセット | 内容 |
+| レジスタ | 内容 |
 |---|---|
-| `0x00–0x9F` | 波形データ (CH0–4 各 32 bytes) |
-| `0x40–0x49` | 周波数レジスタ (CH0–4, 各 2 bytes) |
-| `0x50–0x54` | ボリュームレジスタ (CH0–4) |
-| `0x54`      | チャンネルイネーブルビットマスク |
+| `$00–$1F` | 波形 CH0 (32 bytes, 符号付き 8bit) |
+| `$20–$3F` | 波形 CH1 |
+| `$40–$5F` | 波形 CH2 |
+| `$60–$7F` | 波形 CH3 (`SCC` では CH4 と共有) |
+| `$80–$9F` | 波形 CH4 (`SCCP` のみ独立) |
+| `$C0–$C9` | 周波数 CH0–4 (各 lo, hi の 2 bytes / 12bit 値 N) |
+| `$D0–$D4` | ボリューム CH0–4 (下位 4bit) |
+| `$E1`     | チャンネルイネーブル (bit0–4) |
+| `$E2`     | deformation register |
+
+発音周波数は `f = clock / (32 * (N + 1))` です。
+
+互換 (`SCC`) と拡張 (`SCCP`) の選択はチップ名で行います。実機ではカートリッジの
+マッパーレジスタ (0xBFFE) 側の設定に相当し、音源レジスタ窓の外にあるため、
+実行時に切り替えるレジスタは公開していません。
 
 ## ライセンス
 
