@@ -220,10 +220,14 @@ static std::unique_ptr<ChipEntry> createChip(
         SCC_set_type(e->scc, desc.kind == ChipKind::SCCP ? SCC_ENHANCED : SCC_STANDARD);
         SCC_set_quality(e->scc, 1);
         SCC_reset(e->scc);
-        // mode ($E0) は実機ではマッパー側 (0xBFFE/0xB000) の設定であり
-        // 音源レジスタ窓の外にあるため、チップ種別として生成時に固定する
-        if (desc.kind == ChipKind::SCCP)
-            SCC_writeReg(e->scc, 0xE0, 1);
+        // SCC_write() はレジスタ窓の外へのアクセスを無視するため、実機と同じ
+        // 起動シーケンスでデバイスを有効化しておく必要がある
+        if (desc.kind == ChipKind::SCCP) {
+            SCC_write(e->scc, 0xBFFE, 0x20); // SCC+ モード (base_adr = 0xB000)
+            SCC_write(e->scc, 0xB000, 0x80);
+        } else {
+            SCC_write(e->scc, 0x9000, 0x3F);
+        }
         break;
 
     case ChipKind::DCSG:
@@ -259,16 +263,12 @@ static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val, uint32_t port) {
         OPL_writeReg(c.opl, reg, val);
         break;
     case ChipKind::SCC:
+        // reg はレジスタ窓 0x9800-0x98FF 内のオフセット
+        SCC_write(c.scc, 0x9800 + reg, val);
+        break;
     case ChipKind::SCCP:
-        // SCC_write() は Z80 メモリ空間の絶対アドレスを取り base_adr/active に依存するため、
-        // レジスタ指向 API には内部レジスタマップ直叩きの writeReg を使う
-        // $00-9F:wave $C0-C9:freq $D0-D4:volume $E1:ch enable $E2:deformation
-        // 実機のレジスタ窓に存在しないものは受け付けない:
-        //   $E0     … emu2212 の合成レジスタ (mode はチップ種別で固定)
-        //   $80-$9F … CH4 独立波形は SCC-I のみ。SCC では CH3 と共有
-        if (reg == 0xE0) break;
-        if (c.kind == ChipKind::SCC && 0x80 <= reg && reg <= 0x9F) break;
-        SCC_writeReg(c.scc, reg, val);
+        // SCC+ モードでは窓が 0xB800-0xB8FF に移り、配置も標準 SCC と異なる
+        SCC_write(c.scc, 0xB800 + reg, val);
         break;
     case ChipKind::DCSG:
         // SN76489はシリアルバイト形式 (reg は無視, val をそのまま writeIO)
