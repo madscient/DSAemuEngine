@@ -2,7 +2,9 @@
 
 **FmEngineApi** 準拠の音源エミュレーションエンジン。  
 [digital-sound-antiques](https://github.com/digital-sound-antiques) の各エミュレーションコアを  
-Git submodule として統合した共有ライブラリ (DLL / .so / .dylib) です。
+Git submodule として統合した共有ライブラリ (DLL / .so / .dylib) です。  
+[Y8960](https://github.com/hra1129/Y8960_Cartridge) カートリッジの拡張 OPL2 部・拡張 OPLL 部も、
+emu8950 / emu2413 を改造したコアで提供します。
 
 ## 統合コア (submodules)
 
@@ -13,6 +15,15 @@ Git submodule として統合した共有ライブラリ (DLL / .so / .dylib) �
 | `extern/emu8950`  | [emu8950](https://github.com/digital-sound-antiques/emu8950)   | Y8950 / YM3526 / YM3812 | `Y8950` / `OPL` / `OPL2` |
 | `extern/emu2212`  | [emu2212](https://github.com/digital-sound-antiques/emu2212)   | Konami SCC / SCC-I | `SCC` / `SCCP` |
 | `extern/emu76489` | [emu76489](https://github.com/digital-sound-antiques/emu76489) | SN76489 (DCSG)     | `DCSG` |
+
+## Y8960 用のコア (submodule の改造版)
+
+| パス | 元にしたコア | Y8960 のブロック | FmEngineApi チップ名 |
+|---|---|---|---|
+| `src/y8960/Y8960Opl2exCore.*`, `Y8960Opl2exAdpcm.*` | emu8950 v1.1.4 | 拡張 OPL2 部 (YM3812 + ADPCM-B) | `OPL2EX` |
+| `src/y8960/Y8960OpllCore.*` | emu2413 v1.5.9 | 拡張 OPLL 部 (チャンネル別プリセット音色バンク) | `OPLLEX` |
+
+`extern/` の submodule は改造せず、そのまま `OPL2` / `Y8950` / `OPLL` などに使います。
 
 ## 対応チップ一覧
 
@@ -29,6 +40,10 @@ Git submodule として統合した共有ライブラリ (DLL / .so / .dylib) �
 | `SCC`   | Konami SCC               | 3.580 MHz | 1,789,772 Hz |
 | `SCCP`  | Konami SCC-I (SCC+)      | 3.580 MHz | 1,789,772 Hz |
 | `DCSG`  | SN76489                  | 3.580 MHz | 223,721 Hz |
+| `OPL2EX` | Y8960 拡張 OPL2 部 (YM3812 + ADPCM-B) | 3.580 MHz | 49,715 Hz |
+| `OPLLEX` | Y8960 拡張 OPLL 部 (YM2413 + 音色バンク) | 3.580 MHz | 49,715 Hz |
+
+`FmEngine_GetSupportedChip` はこの表の順にチップ名を返します。
 
 ## ファイル構成
 
@@ -43,9 +58,12 @@ DSAemuEngine/
 │   ├── emu8950/              ← git submodule
 │   ├── emu2212/              ← git submodule
 │   └── emu76489/             ← git submodule
-└── src/
-    ├── FmEngineApi.h         ← API ヘッダ (FMEngineTest と共通)
-    └── DSAemuEngine.cpp      ← エンジン実装
+├── src/
+│   ├── FmEngineApi.h         ← API ヘッダ (FMEngineTest と共通)
+│   ├── DSAemuEngine.cpp      ← エンジン実装
+│   └── y8960/                ← OPL2EX / OPLLEX 用のコア (emu8950 / emu2413 の改造版)
+└── tests/
+    └── api_test.cpp          ← DLL を実行時にロードして叩く試験
 ```
 
 ## セットアップ
@@ -75,6 +93,19 @@ cmake --build build --config Release
 :: 成果物: build\bin\DSAemuEngine.dll
 ```
 
+ビルドディレクトリのパスが深いと、MSBuild がパス長の上限に当たって失敗します。
+
+### 試験
+
+ビルドすると `api_test` も作られます。ビルドした共有ライブラリを実行時にロードし、
+エクスポートされた関数だけを通して振る舞いを確かめます。
+
+```bash
+ctest --test-dir build -C Release --output-on-failure
+```
+
+試験を作らない場合は `-DDSAEMU_BUILD_TESTS=OFF` を指定します。
+
 ## FMEngineTest との接続
 
 ビルドした共有ライブラリを FMEngineTest の実行ディレクトリに置き、
@@ -88,6 +119,19 @@ cd <FMEngineTest_dir>
 ./FMEngineTest -e ./libDSAemuEngine.so patches/opll.json
 ./FMEngineTest -e ./libDSAemuEngine.so patches/all.json
 ```
+
+## 部位ごとのゲイン
+
+FmEngineApi の任意エクスポート `FmEngine_SetPartGain` / `FmEngine_GetPartGain` /
+`FmEngine_GetPartMask` に対応しています。
+
+| チップ | 部位 |
+|---|---|
+| `OPLL` / `OPLLP` / `OPLLX` / `VRC7` | `FM_PART_OPLL_MELODY` (メロディ)、`FM_PART_OPLL_RHYTHM` (リズム) |
+| 上記以外 (`OPLLEX` を含む) | なし (`FmEngine_GetPartMask` は 0) |
+
+部位のゲインの既定値は 1.0 です。実際に掛かるゲインは `FmEngine_SetGain` のゲインと
+部位のゲインの積です。
 
 ## チップ固有の注意事項
 
@@ -138,7 +182,60 @@ ADPCM データは `FmEngine_SetMemory(chip_id, FM_MEM_ADPCM_B, data, size)` で
 (0xBFFE) とデバイス有効化 (0x9000 / 0xB000) はチップ生成時に設定されるため、
 アプリケーション側で書き込む必要はありません。
 
+### OPL2EX (Y8960 拡張 OPL2 部)
+
+YM3812 に Y8950 の ADPCM-B を足したもので、レジスタ配置は Y8950 と同じです。
+`reg` はレジスタ番号、`port` は使いません。
+
+| レジスタ | 内容 |
+|---|---|
+| `0x07`, `0x09–0x12` | ADPCM-B |
+| `0x08` | bit7-6 は CSM / NOTE-SEL、bit1 は ADPCM の 64K モード。bit0 (ROM) は無視 |
+| `0xE0–0xF5` | 波形選択 (YM3812 と同じ)。`0x01` の bit5 が 1 のときだけ書き込みを受け付ける |
+| 上記以外 | YM3812 と同じ |
+
+- ADPCM のサンプルメモリは RAM 256KB だけで、ROM はありません。`0x08` の bit0 を
+  立てても RAM から再生します
+- サンプルデータは `FmEngine_SetMemory(chip_id, FM_MEM_ADPCM_B, data, size)` で
+  RAM の先頭から書き込みます。256KB を超える部分は捨てられます。
+  `0x07` の REC と MEMORY DATA を立てて `0x0F` に書き込む方法でも書けます
+- `0x07` の bit3 (SP-OFF) を立てると ADPCM は無音になります
+- 実機は 2 回路を持ち、2 回路で 256KB の SRAM を分け合います。本エンジンでは
+  `OPL2EX` を 1 個追加するごとに 256KB の RAM を別々に持ち、チップ間で
+  サンプルメモリは共有されません。2 回路を鳴らすときは `OPL2EX` を 2 個追加し、
+  それぞれに `FmEngine_SetMemory` してください
+
+### OPLLEX (Y8960 拡張 OPLL 部)
+
+YM2413 に、チャンネルごとにプリセット音色のバンクを選ぶレジスタを足したものです。
+`reg` はレジスタ番号、`port` は使いません。
+
+| レジスタ | 内容 |
+|---|---|
+| `0x00–0x3F` | YM2413 と同じ |
+| `0x40–0x48` | ch0–ch8 の音色バンク (bit1-0)。上位ビットは無視 |
+
+| バンク | プリセット音色 |
+|---|---|
+| 0 | OPLL (YM2413) |
+| 1 | OPLL-X (YM2423 相当) |
+| 2 | OPLL-P (YMF281 相当) |
+| 3 | VRC7 (DS1001 相当) |
+
+- バンクレジスタを書くと、そのチャンネルが鳴っている途中でも音色が切り替わります
+- ユーザー音色 (音色 0) はバンクに属さず、全バンクで共通です
+- リズム音色は全バンクで共通です
+- プリセット音色は 4 バンクとも
+  [Copyright free OPLL(x) ROM patches](https://github.com/plgDavid/misc/wiki/Copyright-free-OPLL(x)-ROM-patches)
+  から取っています。そのためバンク 0 の音色は `OPLL` チップの音色と完全には一致しません
+- 実機は 2 回路を持ちます。2 回路を鳴らすときは `OPLLEX` を 2 個追加してください
+
 ## ライセンス
 
 各 submodule はそれぞれのライセンスに従います。  
 `emu2149`, `emu2413`, `emu8950`, `emu2212`, `emu76489` はすべて **MIT License** です。
+
+`src/y8960/` のコアは emu8950 / emu2413 を改造したもので、元と同じ **MIT License** です。
+ただし `src/y8960/Y8960OpllCore.c` のプリセット音色データは
+"Copyright free OPLL(x) ROM patches" (David Viens, Hubert Lamontagne) によるもので、
+**CC BY-SA** に従います。

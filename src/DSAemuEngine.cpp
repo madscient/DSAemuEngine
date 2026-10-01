@@ -6,6 +6,7 @@
 //   emu8950  (Y8950/YM3526/YM3812)   → Y8950 / OPL / OPL2 チップ
 //   emu2212  (Konami SCC)             → SCC / SCCP チップ
 //   emu76489 (SN76489 DCSG)          → DCSG チップ
+//   src/y8960 (emu8950 / emu2413 のフォーク) → OPL2EX / OPLLEX チップ (Y8960)
 
 #include "FmEngineApi.h"
 #include "../extern/emu2149/emu2149.h"
@@ -13,6 +14,8 @@
 #include "../extern/emu8950/emu8950.h"
 #include "../extern/emu2212/emu2212.h"
 #include "../extern/emu76489/emu76489.h"
+#include "y8960/Y8960Opl2exCore.h"
+#include "y8960/Y8960OpllCore.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -27,6 +30,13 @@
 //  定数
 // =========================================================
 static constexpr float kOutputScale = 1.0f / 32768.0f;
+
+// Y8960 では 2 回路の OPL2EX がこの容量の SRAM を分け合うが、FmEngineApi には
+// チップ間でメモリを共有させる口が無いので、1 チップごとに丸ごと持たせる
+static constexpr uint32_t kY8960AdpcmRamSize = 256 * 1024;
+
+// 部位マスクが uint32_t なので、FmPart の番号は 0〜31 に収まる
+static constexpr uint32_t kPartSlots = 32;
 
 // =========================================================
 //  チップ種別列挙
@@ -43,10 +53,12 @@ enum class ChipKind {
     SCC,    // emu2212  Konami SCC
     SCCP,   // emu2212  Konami SCC-I (SCC+)
     DCSG,   // emu76489 SN76489
+    OPL2EX, // y8960    Y8960 拡張 OPL2 (YM3812 + ADPCM-B)
+    OPLLEX, // y8960    Y8960 拡張 OPLL (チャンネル別プリセット音色バンク)
 };
 
 // =========================================================
-//  チップエントリ (ポリモーフィズムを使わず union で管理)
+//  チップエントリ
 // =========================================================
 struct ChipEntry {
     ChipKind  kind;
@@ -55,21 +67,33 @@ struct ChipEntry {
     uint32_t  clock;        // マスタークロック
 
     // 各コアへのポインタ (使用するのは kind に応じた1つのみ)
-    PSG*   psg   = nullptr;
-    OPLL*  opll  = nullptr;
-    OPL*   opl   = nullptr;
-    SCC*   scc   = nullptr;
-    SNG*   sng   = nullptr;
+    PSG*       psg    = nullptr;
+    OPLL*      opll   = nullptr;
+    OPL*       opl    = nullptr;
+    SCC*       scc    = nullptr;
+    SNG*       sng    = nullptr;
+    Y8960OPL*  opl2ex = nullptr;
+    Y8960OPLL* opllex = nullptr;
+
+    // OPL2EX の ADPCM サンプル RAM。コアは窓として参照するだけで所有しない
+    std::vector<uint8_t> adpcm_ram;
 
     float gain_l = 1.0f;
     float gain_r = 1.0f;
+    float part_gain[kPartSlots][2];
+
+    ChipEntry() {
+        for (auto& g : part_gain) { g[0] = 1.0f; g[1] = 1.0f; }
+    }
 
     ~ChipEntry() {
-        if (psg)  { PSG_delete(psg);  psg  = nullptr; }
-        if (opll) { OPLL_delete(opll); opll = nullptr; }
-        if (opl)  { OPL_delete(opl);  opl  = nullptr; }
-        if (scc)  { SCC_delete(scc);  scc  = nullptr; }
-        if (sng)  { SNG_delete(sng);  sng  = nullptr; }
+        if (psg)    { PSG_delete(psg);  psg  = nullptr; }
+        if (opll)   { OPLL_delete(opll); opll = nullptr; }
+        if (opl)    { OPL_delete(opl);  opl  = nullptr; }
+        if (scc)    { SCC_delete(scc);  scc  = nullptr; }
+        if (sng)    { SNG_delete(sng);  sng  = nullptr; }
+        if (opl2ex) { Y8960OPL_delete(opl2ex);  opl2ex = nullptr; }
+        if (opllex) { Y8960OPLL_delete(opllex); opllex = nullptr; }
     }
 };
 
@@ -103,6 +127,8 @@ static const ChipDesc kChipTable[] = {
     { "SCC",   ChipKind::SCC,   3579545  },  // Konami SCC
     { "SCCP",  ChipKind::SCCP,  3579545  },  // Konami SCC-I (SCC+)
     { "DCSG",  ChipKind::DCSG,  3579545  },  // SN76489
+    { "OPL2EX", ChipKind::OPL2EX, 3579545 }, // Y8960 拡張 OPL2
+    { "OPLLEX", ChipKind::OPLLEX, 3579545 }, // Y8960 拡張 OPLL
 };
 static constexpr uint32_t kChipCount = (uint32_t)(sizeof(kChipTable) / sizeof(kChipTable[0]));
 
@@ -128,10 +154,12 @@ static uint32_t nativeRate(const ChipEntry& c) {
     case ChipKind::OPLLP:
     case ChipKind::OPLLX:
     case ChipKind::VRC7:
+    case ChipKind::OPLLEX:
         return c.clock / 72;
     case ChipKind::Y8950:
     case ChipKind::OPL:
     case ChipKind::OPL2:
+    case ChipKind::OPL2EX:
         return c.clock / 72;
     case ChipKind::SCC:
     case ChipKind::SCCP:
@@ -143,6 +171,33 @@ static uint32_t nativeRate(const ChipEntry& c) {
         return c.clock / 16;
     }
     return c.sample_rate;
+}
+
+// =========================================================
+//  部位
+// =========================================================
+static uint32_t partMask(ChipKind kind) {
+    switch (kind) {
+    case ChipKind::OPLL:
+    case ChipKind::OPLLP:
+    case ChipKind::OPLLX:
+    case ChipKind::VRC7:
+        return (1u << FM_PART_OPLL_MELODY) | (1u << FM_PART_OPLL_RHYTHM);
+    default:
+        // OPLLEX は仕様書の部位の表に載っていないので部位を持たせない。
+        // 出力はメロディとリズムに分けて取り出してあり (routeOpllParts)、
+        // 部位を持たせるならこのマスクに加えるだけでよい
+        return 0;
+    }
+}
+
+// emu2413 のパンはステレオ定位のための拡張機能だが、ここではメロディを L、
+// リズムを R に振り分けて 2 系統を別々に取り出すのに使う。OPLL_reset は
+// パンを中央に戻すので、リセットのたびに掛け直すこと
+template <typename Chip>
+static void routeOpllParts(Chip* chip, void (*setPan)(Chip*, uint32_t, uint8_t)) {
+    for (uint32_t ch = 0; ch < 9; ++ch)  setPan(chip, ch, 2);  // 0..8: メロディ
+    for (uint32_t ch = 9; ch < 14; ++ch) setPan(chip, ch, 1);  // 9..13: BD HH SD TOM CYM
 }
 
 // =========================================================
@@ -174,6 +229,7 @@ static std::unique_ptr<ChipEntry> createChip(
         OPLL_setChipType(e->opll, 0);
         OPLL_resetPatch(e->opll, OPLL_2413_TONE);
         OPLL_reset(e->opll);
+        routeOpllParts(e->opll, OPLL_setPan);
         break;
 
     case ChipKind::OPLLP:
@@ -182,6 +238,7 @@ static std::unique_ptr<ChipEntry> createChip(
         OPLL_setChipType(e->opll, 0);
         OPLL_resetPatch(e->opll, OPLL_281B_TONE);
         OPLL_reset(e->opll);
+        routeOpllParts(e->opll, OPLL_setPan);
         break;
 
     case ChipKind::VRC7:
@@ -190,6 +247,14 @@ static std::unique_ptr<ChipEntry> createChip(
         OPLL_setChipType(e->opll, 1);
         OPLL_resetPatch(e->opll, OPLL_VRC7_TONE);
         OPLL_reset(e->opll);
+        routeOpllParts(e->opll, OPLL_setPan);
+        break;
+
+    case ChipKind::OPLLEX:
+        // Y8960OPLL_new が 4 バンクの音色の読み込みとリセットまで済ませる
+        e->opllex = Y8960OPLL_new(e->clock, sample_rate);
+        if (!e->opllex) return nullptr;
+        routeOpllParts(e->opllex, Y8960OPLL_setPan);
         break;
 
     case ChipKind::Y8950:
@@ -211,6 +276,13 @@ static std::unique_ptr<ChipEntry> createChip(
         if (!e->opl) return nullptr;
         OPL_setChipType(e->opl, 2); // YM3812
         OPL_reset(e->opl);
+        break;
+
+    case ChipKind::OPL2EX:
+        e->opl2ex = Y8960OPL_new(e->clock, sample_rate);
+        if (!e->opl2ex) return nullptr;
+        e->adpcm_ram.assign(kY8960AdpcmRamSize, 0);
+        Y8960OPL_setADPCMMemory(e->opl2ex, e->adpcm_ram.data(), kY8960AdpcmRamSize);
         break;
 
     case ChipKind::SCC:
@@ -274,12 +346,48 @@ static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val, uint32_t port) {
         // SN76489はシリアルバイト形式 (reg は無視, val をそのまま writeIO)
         SNG_writeIO(c.sng, val);
         break;
+    case ChipKind::OPL2EX:
+        Y8960OPL_writeReg(c.opl2ex, reg, val);
+        break;
+    case ChipKind::OPLLEX:
+        Y8960OPLL_writeReg(c.opllex, reg, val);
+        break;
     }
 }
 
 // =========================================================
 //  1サンプル生成 (ステレオ, float)
 // =========================================================
+// emu2413 / emu8950 (とそのフォーク) のレート変換器は、補間位置を決める timer を
+// 全チャンネルで共有し、getData を呼ぶたびに f_ratio だけ進める。calcStereo は
+// 1 出力サンプルにつき getData を L と R で 2 回呼ぶので、そのままでは L と R が
+// 別々の、どちらも誤った位置で補間される。先に 1 サンプルぶん進めた timer を置き、
+// 呼び出しの間だけ増分を 0 にして、両チャンネルを mono の calc と同じ位置に揃える
+template <typename Chip>
+static void calcStereoAligned(Chip* chip, void (*calcStereo)(Chip*, int32_t*), int32_t buf[2]) {
+    auto* conv = chip->conv;
+    if (!conv) {
+        calcStereo(chip, buf);
+        return;
+    }
+    const double ratio = conv->f_ratio;
+    const double t = conv->timer + ratio;
+    conv->timer = t - std::floor(t);
+    conv->f_ratio = 0.0;
+    calcStereo(chip, buf);
+    conv->f_ratio = ratio;
+}
+
+// buf はメロディとリズムの 2 系統 (routeOpllParts で振り分けたもの)
+static void mixOpllParts(const ChipEntry& c, const int32_t buf[2], float& out_l, float& out_r) {
+    const float melody = (float)buf[0];
+    const float rhythm = (float)buf[1];
+    const float (&m)[2] = c.part_gain[FM_PART_OPLL_MELODY];
+    const float (&r)[2] = c.part_gain[FM_PART_OPLL_RHYTHM];
+    out_l += (melody * m[0] + rhythm * r[0]) * kOutputScale * c.gain_l;
+    out_r += (melody * m[1] + rhythm * r[1]) * kOutputScale * c.gain_r;
+}
+
 static void chipCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
     int32_t buf[2] = {0, 0};
     switch (c.kind) {
@@ -292,12 +400,20 @@ static void chipCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
     case ChipKind::OPLLP:
     case ChipKind::OPLLX:
     case ChipKind::VRC7:
-        OPLL_calcStereo(c.opll, buf);
-        break;
+        calcStereoAligned(c.opll, OPLL_calcStereo, buf);
+        mixOpllParts(c, buf, out_l, out_r);
+        return;
+    case ChipKind::OPLLEX:
+        calcStereoAligned(c.opllex, Y8960OPLL_calcStereo, buf);
+        mixOpllParts(c, buf, out_l, out_r);
+        return;
     case ChipKind::Y8950:
     case ChipKind::OPL:
     case ChipKind::OPL2:
-        OPL_calcStereo(c.opl, buf);
+        calcStereoAligned(c.opl, OPL_calcStereo, buf);
+        break;
+    case ChipKind::OPL2EX:
+        calcStereoAligned(c.opl2ex, Y8960OPL_calcStereo, buf);
         break;
     case ChipKind::SCC:
     case ChipKind::SCCP: {
@@ -352,11 +468,15 @@ FMENGINE_API FmResult FMENGINE_CALL FmEngine_AddChip(
     const ChipDesc* desc = findChipDesc(name);
     if (!desc) return FM_ERR_UNKNOWN_CHIP;
 
-    auto chip = createChip(*desc, clock, engine->sample_rate);
-    if (!chip) return FM_ERR_ALLOC;
+    try {
+        auto chip = createChip(*desc, clock, engine->sample_rate);
+        if (!chip) return FM_ERR_ALLOC;
 
-    if (out_id) *out_id = (uint32_t)engine->chips.size();
-    engine->chips.push_back(std::move(chip));
+        if (out_id) *out_id = (uint32_t)engine->chips.size();
+        engine->chips.push_back(std::move(chip));
+    } catch (const std::bad_alloc&) {
+        return FM_ERR_ALLOC;
+    }
     return FM_OK;
 }
 
@@ -408,17 +528,65 @@ FMENGINE_API FmResult FMENGINE_CALL FmEngine_GetGain(
     return FM_OK;
 }
 
+static bool hasPart(const ChipEntry& c, FmPart part) {
+    const uint32_t n = (uint32_t)part;
+    return n < kPartSlots && (partMask(c.kind) & (1u << n)) != 0;
+}
+
+FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetPartGain(
+    FmEngineHandle engine, uint32_t chip_id, FmPart part,
+    float gain_l, float gain_r)
+{
+    if (!engine || chip_id >= engine->chips.size()) return FM_ERR_INVALID_ARG;
+    auto& c = *engine->chips[chip_id];
+    if (!hasPart(c, part)) return FM_ERR_INVALID_ARG;
+    std::lock_guard<std::mutex> lock(engine->write_mutex);
+    c.part_gain[part][0] = gain_l;
+    c.part_gain[part][1] = gain_r;
+    return FM_OK;
+}
+
+FMENGINE_API FmResult FMENGINE_CALL FmEngine_GetPartGain(
+    FmEngineHandle engine, uint32_t chip_id, FmPart part,
+    float* out_gain_l, float* out_gain_r)
+{
+    if (!engine || chip_id >= engine->chips.size()) return FM_ERR_INVALID_ARG;
+    if (!out_gain_l || !out_gain_r) return FM_ERR_INVALID_ARG;
+    auto& c = *engine->chips[chip_id];
+    if (!hasPart(c, part)) return FM_ERR_INVALID_ARG;
+    std::lock_guard<std::mutex> lock(engine->write_mutex);
+    *out_gain_l = c.part_gain[part][0];
+    *out_gain_r = c.part_gain[part][1];
+    return FM_OK;
+}
+
+FMENGINE_API FmResult FMENGINE_CALL FmEngine_GetPartMask(
+    FmEngineHandle engine, uint32_t chip_id, uint32_t* out_mask)
+{
+    if (!engine || chip_id >= engine->chips.size()) return FM_ERR_INVALID_ARG;
+    if (!out_mask) return FM_ERR_INVALID_ARG;
+    *out_mask = partMask(engine->chips[chip_id]->kind);
+    return FM_OK;
+}
+
 FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemory(
     FmEngineHandle engine, uint32_t chip_id,
     FmMemoryType mem_type, const uint8_t* data, uint32_t size)
 {
     if (!engine || chip_id >= engine->chips.size()) return FM_ERR_INVALID_ARG;
+    if (!data && size != 0) return FM_ERR_INVALID_ARG;
     auto& c = *engine->chips[chip_id];
 
     // Y8950 は ADPCM-B RAM に対応
     if ((c.kind == ChipKind::Y8950) && c.opl) {
         if (mem_type == FM_MEM_ADPCM_B) {
             OPL_writeADPCMData(c.opl, 0, 0, size, data);
+            return FM_OK;
+        }
+    }
+    if ((c.kind == ChipKind::OPL2EX) && c.opl2ex) {
+        if (mem_type == FM_MEM_ADPCM_B) {
+            Y8960OPL_writeADPCMData(c.opl2ex, 0, size, data);
             return FM_OK;
         }
     }

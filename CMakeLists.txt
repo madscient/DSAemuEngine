@@ -43,6 +43,11 @@ set(CORE_SOURCES
 
     # emu76489 SN76489 DCSG → DCSG
     extern/emu76489/emu76489.c
+
+    # emu8950 / emu2413 のフォーク → OPL2EX / OPLLEX (Y8960)
+    src/y8960/Y8960Opl2exCore.c
+    src/y8960/Y8960Opl2exAdpcm.c
+    src/y8960/Y8960OpllCore.c
 )
 
 set(ENGINE_SOURCES
@@ -89,6 +94,25 @@ else()
         OUTPUT_NAME              "DSAemuEngine"
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     )
+endif()
+
+# -------------------------------------------------------
+#  テスト (任意)
+#  api_test は FMEngineTest と同じく DLL を実行時にロードして
+#  エクスポートされた関数だけを叩く。
+#  ctest -C Release で走らせる。
+# -------------------------------------------------------
+option(DSAEMU_BUILD_TESTS "Build the API test" ON)
+if(DSAEMU_BUILD_TESTS)
+    enable_testing()
+    add_executable(api_test tests/api_test.cpp)
+    target_include_directories(api_test PRIVATE src)
+    target_link_libraries(api_test PRIVATE ${CMAKE_DL_LIBS})
+    if(MSVC)
+        target_compile_options(api_test PRIVATE /W3 /utf-8)
+    endif()
+    add_dependencies(api_test DSAemuEngine)
+    add_test(NAME api_test COMMAND api_test $<TARGET_FILE:DSAemuEngine>)
 endif()
 
 # -------------------------------------------------------
