@@ -3,8 +3,8 @@
 **FmEngineApi** 準拠の音源エミュレーションエンジン。  
 [digital-sound-antiques](https://github.com/digital-sound-antiques) の各エミュレーションコアを  
 Git submodule として統合した共有ライブラリ (DLL / .so / .dylib) です。  
-[Y8960](https://github.com/hra1129/Y8960_Cartridge) カートリッジの拡張 OPL2 部・拡張 OPLL 部も、
-emu8950 / emu2413 を改造したコアで提供します。
+[Y8960](https://github.com/hra1129/Y8960_Cartridge) カートリッジの拡張 OPL2 部・拡張 OPLL 部・SSGS も、
+emu8950 / emu2413 / emu2149 を改造したコアで提供します。
 
 ## 統合コア (submodules)
 
@@ -22,8 +22,9 @@ emu8950 / emu2413 を改造したコアで提供します。
 |---|---|---|---|
 | `src/y8960/Y8960Opl2exCore.*`, `Y8960Opl2exAdpcm.*` | emu8950 v1.1.4 | 拡張 OPL2 部 (YM3812 + ADPCM-B) | `OPL2EX` |
 | `src/y8960/Y8960OpllCore.*` | emu2413 v1.5.9 | 拡張 OPLL 部 (チャンネル別プリセット音色バンク) | `OPLLEX` |
+| `src/y8960/Y8960SsgsCore.*` | emu2149 v1.42 | SSGS (YMZ705 の SSG 部相当。YM2149 × 2 + パンポット) | `SSGS` |
 
-`extern/` の submodule は改造せず、そのまま `OPL2` / `Y8950` / `OPLL` などに使います。
+`extern/` の submodule は改造せず、そのまま `SSG` / `OPL2` / `Y8950` / `OPLL` などに使います。
 
 ## 対応チップ一覧
 
@@ -42,6 +43,7 @@ emu8950 / emu2413 を改造したコアで提供します。
 | `DCSG`  | SN76489                  | 3.580 MHz | 223,721 Hz |
 | `OPL2EX` | Y8960 拡張 OPL2 部 (YM3812 + ADPCM-B) | 3.580 MHz | 49,715 Hz |
 | `OPLLEX` | Y8960 拡張 OPLL 部 (YM2413 + 音色バンク) | 3.580 MHz | 49,715 Hz |
+| `SSGS`   | Y8960 SSGS (YMZ705 の SSG 部相当) | 3.580 MHz | 223,721 Hz |
 
 `FmEngine_GetSupportedChip` はこの表の順にチップ名を返します。
 
@@ -61,7 +63,7 @@ DSAemuEngine/
 ├── src/
 │   ├── FmEngineApi.h         ← API ヘッダ (FMEngineTest と共通)
 │   ├── DSAemuEngine.cpp      ← エンジン実装
-│   └── y8960/                ← OPL2EX / OPLLEX 用のコア (emu8950 / emu2413 の改造版)
+│   └── y8960/                ← OPL2EX / OPLLEX / SSGS 用のコア (emu8950 / emu2413 / emu2149 の改造版)
 └── tests/
     └── api_test.cpp          ← DLL を実行時にロードして叩く試験
 ```
@@ -230,12 +232,39 @@ YM2413 に、チャンネルごとにプリセット音色のバンクを選ぶ�
   から取っています。そのためバンク 0 の音色は `OPLL` チップの音色と完全には一致しません
 - 実機は 2 回路を持ちます。2 回路を鳴らすときは `OPLLEX` を 2 個追加してください
 
+### SSGS (Y8960 SSGS)
+
+YM2149 相当の SSG を 2 系統持ち、6 チャンネルそれぞれにパンポットを持ちます。
+レジスタ配置は YMZ705 の SSG 部と同じです。`reg` はレジスタ番号、`port` は使いません。
+
+| レジスタ | 内容 |
+|---|---|
+| `0x00–0x0D` | SSG-1 (YM2149 と同じ配置) |
+| `0x10–0x12` | SSG-1 CH A–C のパンポット (bit3-0) |
+| `0x20–0x2D` | SSG-2 (YM2149 と同じ配置) |
+| `0x30–0x32` | SSG-2 CH A–C のパンポット (bit3-0) |
+| 上記以外 | 無視 (`0x40` 以降を含む) |
+
+- パンポットが中央のとき、SSG-1 / SSG-2 はそれぞれ、SSG の動作クロックを同じにした
+  `SSG` チップと同じ音を出します
+- `clock` はマスタークロックです。SSG はその 1/2 (5.12MHz 以上なら 1/3) で動きます。
+  既定の 3.579545MHz では SSG は 1.789772MHz で動き、ネイティブレートはその 1/8 です
+- パンポットは 0 が左端、8 が中央、15 が右端です。片側は全開のまま、反対側のレベル
+  だけが線形に絞られます。0 と 1 はどちらも左端です
+
+  | 値 | 0 | 1 | 4 | 8 | 11 | 14 | 15 |
+  |---|---|---|---|---|---|---|---|
+  | L | 1.000 | 1.000 | 1.000 | 1.000 | 0.571 | 0.143 | 0.000 |
+  | R | 0.000 | 0.000 | 0.429 | 1.000 | 1.000 | 1.000 | 1.000 |
+
+- リセット直後のパンポットは全チャンネル 8 (中央) です
+
 ## ライセンス
 
 各 submodule はそれぞれのライセンスに従います。  
 `emu2149`, `emu2413`, `emu8950`, `emu2212`, `emu76489` はすべて **MIT License** です。
 
-`src/y8960/` のコアは emu8950 / emu2413 を改造したもので、元と同じ **MIT License** です。
+`src/y8960/` のコアは emu8950 / emu2413 / emu2149 を改造したもので、元と同じ **MIT License** です。
 ただし `src/y8960/Y8960OpllCore.c` のプリセット音色データは
 "Copyright free OPLL(x) ROM patches" (David Viens, Hubert Lamontagne) によるもので、
 **CC BY-SA** に従います。

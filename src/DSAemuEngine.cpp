@@ -6,7 +6,7 @@
 //   emu8950  (Y8950/YM3526/YM3812)   → Y8950 / OPL / OPL2 チップ
 //   emu2212  (Konami SCC)             → SCC / SCCP チップ
 //   emu76489 (SN76489 DCSG)          → DCSG チップ
-//   src/y8960 (emu8950 / emu2413 のフォーク) → OPL2EX / OPLLEX チップ (Y8960)
+//   src/y8960 (emu8950 / emu2413 / emu2149 のフォーク) → OPL2EX / OPLLEX / SSGS チップ (Y8960)
 
 #include "FmEngineApi.h"
 #include "../extern/emu2149/emu2149.h"
@@ -16,6 +16,7 @@
 #include "../extern/emu76489/emu76489.h"
 #include "y8960/Y8960Opl2exCore.h"
 #include "y8960/Y8960OpllCore.h"
+#include "y8960/Y8960SsgsCore.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -55,6 +56,7 @@ enum class ChipKind {
     DCSG,   // emu76489 SN76489
     OPL2EX, // y8960    Y8960 拡張 OPL2 (YM3812 + ADPCM-B)
     OPLLEX, // y8960    Y8960 拡張 OPLL (チャンネル別プリセット音色バンク)
+    SSGS,   // y8960    Y8960 SSGS (YMZ705 の SSG 部: YM2149 x2 + パンポット)
 };
 
 // =========================================================
@@ -74,6 +76,7 @@ struct ChipEntry {
     SNG*       sng    = nullptr;
     Y8960OPL*  opl2ex = nullptr;
     Y8960OPLL* opllex = nullptr;
+    Y8960SSG*  ssgs[2] = { nullptr, nullptr };
 
     // OPL2EX の ADPCM サンプル RAM。コアは窓として参照するだけで所有しない
     std::vector<uint8_t> adpcm_ram;
@@ -94,6 +97,8 @@ struct ChipEntry {
         if (sng)    { SNG_delete(sng);  sng  = nullptr; }
         if (opl2ex) { Y8960OPL_delete(opl2ex);  opl2ex = nullptr; }
         if (opllex) { Y8960OPLL_delete(opllex); opllex = nullptr; }
+        for (auto& unit : ssgs)
+            if (unit) { Y8960SSG_delete(unit); unit = nullptr; }
     }
 };
 
@@ -129,6 +134,7 @@ static const ChipDesc kChipTable[] = {
     { "DCSG",  ChipKind::DCSG,  3579545  },  // SN76489
     { "OPL2EX", ChipKind::OPL2EX, 3579545 }, // Y8960 拡張 OPL2
     { "OPLLEX", ChipKind::OPLLEX, 3579545 }, // Y8960 拡張 OPLL
+    { "SSGS",   ChipKind::SSGS,   3579545 }, // Y8960 SSGS (マスタークロック)
 };
 static constexpr uint32_t kChipCount = (uint32_t)(sizeof(kChipTable) / sizeof(kChipTable[0]));
 
@@ -143,6 +149,13 @@ static const ChipDesc* findChipDesc(const char* name) {
 // =========================================================
 //  ネイティブレート取得ヘルパー
 // =========================================================
+// SSGS の clock はマスタークロック (YMZ705 の XI ピン) で、SSG はそれを分周した
+// クロックで動く。分周比を選ぶ S6M ピンに当たる指定が無いので、EPSGemuEngine の
+// SSGS と同じく 5.12MHz 未満なら 1/2、以上なら 1/3 とする
+static uint32_t ssgsUnitClock(uint32_t clock) {
+    return clock < 5120000 ? clock / 2 : clock / 3;
+}
+
 static uint32_t nativeRate(const ChipEntry& c) {
     switch (c.kind) {
     case ChipKind::SSG:
@@ -169,6 +182,8 @@ static uint32_t nativeRate(const ChipEntry& c) {
     case ChipKind::DCSG:
         // SN76489: clk / 16 ≈ 223722 at 3.58MHz
         return c.clock / 16;
+    case ChipKind::SSGS:
+        return ssgsUnitClock(c.clock) / 8;
     }
     return c.sample_rate;
 }
@@ -308,6 +323,15 @@ static std::unique_ptr<ChipEntry> createChip(
         SNG_set_quality(e->sng, 1);
         SNG_reset(e->sng);
         break;
+
+    case ChipKind::SSGS:
+        for (auto& unit : e->ssgs) {
+            unit = Y8960SSG_new(ssgsUnitClock(e->clock), sample_rate);
+            if (!unit) return nullptr;
+            Y8960SSG_setQuality(unit, 1);
+            Y8960SSG_reset(unit);
+        }
+        break;
     }
 
     return e;
@@ -351,6 +375,12 @@ static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val, uint32_t port) {
         break;
     case ChipKind::OPLLEX:
         Y8960OPLL_writeReg(c.opllex, reg, val);
+        break;
+    case ChipKind::SSGS:
+        // 00h-1Fh が SSG-1、20h-3Fh が SSG-2。40h 以降は YMZ705 では ADPCM 部だが、
+        // Y8960 の SSGS は持たない
+        if (reg < 0x40)
+            Y8960SSG_writeReg(c.ssgs[reg >> 5], reg & 0x1F, val);
         break;
     }
 }
@@ -428,6 +458,14 @@ static void chipCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
         buf[1] = sng_buf[1];
         break;
     }
+    case ChipKind::SSGS:
+        for (auto* unit : c.ssgs) {
+            int32_t unit_buf[2];
+            Y8960SSG_calcStereo(unit, unit_buf);
+            buf[0] += unit_buf[0];
+            buf[1] += unit_buf[1];
+        }
+        break;
     }
     out_l += (float)buf[0] * kOutputScale * c.gain_l;
     out_r += (float)buf[1] * kOutputScale * c.gain_r;

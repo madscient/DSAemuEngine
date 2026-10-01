@@ -123,9 +123,9 @@ struct Engine {
     Engine(const Engine&) = delete;
     Engine& operator=(const Engine&) = delete;
 
-    uint32_t add(const char* name) {
+    uint32_t add(const char* name, uint32_t clock = 0) {
         uint32_t id = 0xFFFFFFFFu;
-        if (A.AddChip(h, name, 0, &id) != FM_OK) {
+        if (A.AddChip(h, name, clock, &id) != FM_OK) {
             std::printf("AddChip(%s) failed\n", name);
             ++g_fails;
         }
@@ -153,6 +153,13 @@ Out play(const char* chip, const std::function<void(Engine&, uint32_t)>& setup) 
 
 Out play(const char* chip, const Regs& regs) {
     return play(chip, [&](Engine& e, uint32_t id) { e.write(id, regs); });
+}
+
+Out play(const char* chip, uint32_t clock, const Regs& regs) {
+    Engine e;
+    uint32_t id = e.add(chip, clock);
+    e.write(id, regs);
+    return e.render();
 }
 
 double rms(const std::vector<float>& v) {
@@ -282,14 +289,14 @@ std::function<void(Engine&, uint32_t)> withAdpcm(const Regs& regs, bool load = t
 void testChipList() {
     static const char* expected[] = {
         "SSG", "OPLL", "OPLLP", "OPLLX", "VRC7", "Y8950", "OPL", "OPL2",
-        "SCC", "SCCP", "DCSG", "OPL2EX", "OPLLEX",
+        "SCC", "SCCP", "DCSG", "OPL2EX", "OPLLEX", "SSGS",
     };
     Engine e;
     const uint32_t n = A.Inquiry(e.h);
     bool order = (n == sizeof(expected) / sizeof(expected[0]));
     for (uint32_t i = 0; order && i < n; ++i)
         order = std::strcmp(A.GetSupportedChip(e.h, i), expected[i]) == 0;
-    check("chip list keeps the old order and appends OPL2EX, OPLLEX", order);
+    check("chip list keeps the old order and appends OPL2EX, OPLLEX, SSGS", order);
 
     uint32_t opl2ex = e.add("OPL2EX");
     uint32_t opllex = e.add("OPLLEX");
@@ -305,7 +312,7 @@ void testChipList() {
 void testPartApi() {
     static const char* chips[] = {
         "SSG", "OPLL", "OPLLP", "OPLLX", "VRC7", "Y8950", "OPL", "OPL2",
-        "SCC", "SCCP", "DCSG", "OPL2EX", "OPLLEX",
+        "SCC", "SCCP", "DCSG", "OPL2EX", "OPLLEX", "SSGS",
     };
     const uint32_t opllParts = (1u << FM_PART_OPLL_MELODY) | (1u << FM_PART_OPLL_RHYTHM);
     Engine e;
@@ -499,6 +506,112 @@ void testOpl2exAdpcm() {
           A.SetMemory(e.h, id, FM_MEM_PCM, big.data(), 16) == FM_ERR_UNAVAILABLE);
 }
 
+// YM2149 1 系統ぶん。base は SSGS では 0x00 (SSG-1) か 0x20 (SSG-2)
+// A: トーン、B: トーン + エンベロープ、C: ノイズ
+Regs ssgNotes(uint8_t base) {
+    auto r = [base](uint8_t reg, uint8_t val) { return Reg{ (uint8_t)(base + reg), val }; };
+    return {
+        r(0x00, 0x00), r(0x01, 0x01),
+        r(0x02, 0xC0), r(0x03, 0x00),
+        r(0x06, 0x10),
+        r(0x07, 0x1C),                  // トーン A/B、ノイズ C
+        r(0x08, 0x0F), r(0x09, 0x10), r(0x0A, 0x0C),
+        r(0x0B, 0x00), r(0x0C, 0x02), r(0x0D, 0x0E),
+    };
+}
+
+// ch のトーンだけを鳴らす
+Regs ssgTone(uint8_t base, int ch) {
+    return {
+        { (uint8_t)(base + ch * 2), 0x00 }, { (uint8_t)(base + ch * 2 + 1), 0x01 },
+        { (uint8_t)(base + 0x07), (uint8_t)(0x3F & ~(1 << ch)) },
+        { (uint8_t)(base + 0x08 + ch), 0x0F },
+    };
+}
+
+Regs ssgPan(uint8_t base, int ch, uint8_t pan) {
+    return { { (uint8_t)(base + 0x10 + ch), pan } };
+}
+
+bool allZero(const std::vector<float>& v) {
+    for (float s : v) if (s != 0.0f) return false;
+    return true;
+}
+
+void testSsgs() {
+    // SSGS の clock はマスタークロックで、SSG は 5.12MHz 未満ならその 1/2 で動く
+    Out ssg1 = play("SSGS", ssgNotes(0x00));
+    Out ssg  = play("SSG", 3579545 / 2, ssgNotes(0x00));
+    check("SSGS: SSG-1 sounds exactly as the plain SSG at half the clock",
+          audible(ssg1) && same(ssg1, ssg));
+    check("SSGS: SSG-2 (20h-3Fh) sounds exactly the same",
+          same(play("SSGS", ssgNotes(0x20)), ssg));
+    check("SSGS: from 5.12MHz up the SSG runs at a third of the clock",
+          same(play("SSGS", 6144000, ssgNotes(0x00)), play("SSG", 2048000, ssgNotes(0x00))));
+    {
+        Engine e;
+        uint32_t def = e.add("SSGS"), s6m = e.add("SSGS", 6144000);
+        check("SSGS: native rate is the SSG clock / 8",
+              A.GetNativeRate(e.h, def) == 3579545 / 2 / 8 &&
+              A.GetNativeRate(e.h, s6m) == 6144000 / 3 / 8);
+    }
+    check("SSGS: a silent chip puts out exactly zero", [] {
+        Out o = play("SSGS", Regs{});
+        return allZero(o.l) && allZero(o.r);
+    }());
+
+    // パンポット。center は書かなかったときの出力
+    Out center = play("SSGS", ssgTone(0x00, 0));
+    auto panned = [](uint8_t pan) {
+        return play("SSGS", concat({ ssgPan(0x00, 0, pan), ssgTone(0x00, 0) }));
+    };
+    check("SSGS: a channel sounds on both sides until a pot is written",
+          audible(center) && center.l == center.r);
+    check("SSGS: pan 8 is the centre", same(panned(8), center));
+    Out p0 = panned(0), p1 = panned(1), p14 = panned(14), p15 = panned(15);
+    check("SSGS: pan 0 sounds on the left only, at full level", p0.l == center.l && allZero(p0.r));
+    check("SSGS: pan 1 is hard left as well", p1.l == center.l && allZero(p1.r));
+    check("SSGS: pan 15 sounds on the right only, at full level", p15.r == center.r && allZero(p15.l));
+    check("SSGS: pan 14 is not hard right", p14.r == center.r && rms(p14.l) > kSilent);
+    // 片側は全開のまま、反対側が線形に絞られる。4 は (4-1)/7、11 は (15-11)/7
+    Out p4 = panned(4), p11 = panned(11);
+    check("SSGS: pan 4 turns the right side down to 3/7",
+          p4.l == center.l && std::fabs(rms(p4.r) / rms(p4.l) - 3.0 / 7) < 0.01);
+    check("SSGS: pan 11 turns the left side down to 4/7",
+          p11.r == center.r && std::fabs(rms(p11.l) / rms(p11.r) - 4.0 / 7) < 0.01);
+    check("SSGS: the upper bits of a pan register are ignored", same(panned(0xF0), p0));
+
+    // チャンネルごと、系統ごとに独立している
+    Out aLeft  = play("SSGS", concat({ ssgPan(0x00, 0, 0), ssgTone(0x00, 0) }));
+    Out bRight = play("SSGS", concat({ ssgPan(0x00, 1, 15), ssgTone(0x00, 1) }));
+    Out both   = play("SSGS", concat({ ssgPan(0x00, 0, 0), ssgPan(0x00, 1, 15), ssgTone(0x00, 0),
+                                       ssgTone(0x00, 1), { { 0x07, 0x3C } } }));
+    check("SSGS: each channel of a unit has its own pot",
+          both.l == aLeft.l && both.r == bRight.r);
+    // 2 系統は足し合わされるだけなので、同時に鳴らした出力は別々に鳴らした和になる
+    Out unit1Only = play("SSGS", ssgNotes(0x00));
+    Out unit2Only = play("SSGS", ssgTone(0x20, 1));
+    Out together  = play("SSGS", concat({ ssgNotes(0x00), ssgTone(0x20, 1) }));
+    double d = 0.0;
+    for (size_t i = 0; i < together.l.size(); ++i)
+        d = std::fmax(d, std::fabs((double)together.l[i] - ((double)unit1Only.l[i] + unit2Only.l[i])));
+    check("SSGS: SSG-1 and SSG-2 are separate units that sound together",
+          audible(unit2Only) && d < 1e-6);
+    Out unit2Right = play("SSGS", concat({ ssgPan(0x20, 0, 15), ssgTone(0x20, 0) }));
+    Out units = play("SSGS", concat({ ssgPan(0x00, 0, 0), ssgTone(0x00, 0),
+                                      ssgPan(0x20, 0, 15), ssgTone(0x20, 0) }));
+    check("SSGS: the two units sit on opposite sides at once",
+          units.l == aLeft.l && units.r == unit2Right.r);
+
+    // 持たないレジスタ: I/O ポート (0Eh/0Fh)、LED (2Fh)、13h-1Fh、33h-3Fh、40h 以降
+    Regs junk;
+    for (int r : { 0x0E, 0x0F, 0x2E, 0x2F }) junk.push_back({ (uint8_t)r, 0xFF });
+    for (int r = 0x13; r < 0x20; ++r) junk.push_back({ (uint8_t)r, 0xFF });
+    for (int r = 0x33; r < 0x100; ++r) junk.push_back({ (uint8_t)r, 0xFF });
+    check("SSGS: registers it does not have change nothing",
+          same(play("SSGS", concat({ junk, ssgNotes(0x00) })), ssg1));
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -515,6 +628,7 @@ int main(int argc, char** argv) {
     testConverterPhase();
     testOpl2exFm();
     testOpl2exAdpcm();
+    testSsgs();
 
     std::printf("%s (%d failed)\n", g_fails ? "FAILED" : "PASSED", g_fails);
     return g_fails ? 1 : 0;

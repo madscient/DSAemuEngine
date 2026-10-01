@@ -44,10 +44,11 @@ set(CORE_SOURCES
     # emu76489 SN76489 DCSG → DCSG
     extern/emu76489/emu76489.c
 
-    # emu8950 / emu2413 のフォーク → OPL2EX / OPLLEX (Y8960)
+    # emu8950 / emu2413 / emu2149 のフォーク → OPL2EX / OPLLEX / SSGS (Y8960)
     src/y8960/Y8960Opl2exCore.c
     src/y8960/Y8960Opl2exAdpcm.c
     src/y8960/Y8960OpllCore.c
+    src/y8960/Y8960SsgsCore.c
 )
 
 set(ENGINE_SOURCES
