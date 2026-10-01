@@ -28,13 +28,29 @@
 #include <algorithm>
 
 // =========================================================
+//  FmEngine_SetMemoryEx の型
+//  仕様 (FMEngineTest の docs/FmEngineApi.md) にあるが、写し元の YMEngine の
+//  FmEngineApi.h にはまだ無い。ヘッダを写し直すとここが重複定義になるので消す
+// =========================================================
+static constexpr FmMemoryType FM_MEM_ADPCM_B_ROMMODE = (FmMemoryType)4;
+
+typedef enum FmMemoryAccess {
+    FM_ACCESS_ROM = 0,
+    FM_ACCESS_RAM = 1,
+} FmMemoryAccess;
+
+extern "C" FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemoryEx(
+    FmEngineHandle engine, uint32_t chip_id,
+    FmMemoryType mem_type, uint32_t base,
+    uint8_t* data, uint32_t size, FmMemoryAccess access);
+
+// =========================================================
 //  定数
 // =========================================================
 static constexpr float kOutputScale = 1.0f / 32768.0f;
 
-// Y8960 では 2 回路の OPL2EX がこの容量の SRAM を分け合うが、FmEngineApi には
-// チップ間でメモリを共有させる口が無いので、1 チップごとに丸ごと持たせる
-static constexpr uint32_t kY8960AdpcmRamSize = 256 * 1024;
+// ADPCM-B が番地を引ける範囲。Y8950 も OPL2EX も 256KB
+static constexpr uint32_t kAdpcmSpaceSize = 256 * 1024;
 
 // 部位マスクが uint32_t なので、FmPart の番号は 0〜31 に収まる
 static constexpr uint32_t kPartSlots = 32;
@@ -78,8 +94,23 @@ struct ChipEntry {
     Y8960OPLL* opllex = nullptr;
     Y8960SSG*  ssgs[2] = { nullptr, nullptr };
 
-    // OPL2EX の ADPCM サンプル RAM。コアは窓として参照するだけで所有しない
+    // FmEngine_SetMemoryEx の割り当て。[0] が FM_MEM_ADPCM_B、[1] が FM_MEM_ADPCM_B_ROMMODE
+    struct MemMapping {
+        uint32_t base;
+        uint32_t size;
+        uint8_t* data;
+        bool     ram;
+    };
+    std::vector<MemMapping> mappings[2];
+
+    // OPL2EX: FmEngine_SetMemory の書き込み先。割り当てが 1 つも無い間だけコアから見える
     std::vector<uint8_t> adpcm_ram;
+    // OPL2EX: コアに渡す割り当ての表。コアは参照するだけ
+    std::vector<Y8960OPL_ADPCM_REGION> adpcm_map;
+
+    // Y8950: emu8950 が自分で確保した RAM / ROM と、ROM の割り当てを複製する先
+    uint8_t* y8950_own[2] = { nullptr, nullptr };
+    std::vector<uint8_t> y8950_image[2];
 
     float gain_l = 1.0f;
     float gain_r = 1.0f;
@@ -92,7 +123,15 @@ struct ChipEntry {
     ~ChipEntry() {
         if (psg)    { PSG_delete(psg);  psg  = nullptr; }
         if (opll)   { OPLL_delete(opll); opll = nullptr; }
-        if (opl)    { OPL_delete(opl);  opl  = nullptr; }
+        if (opl) {
+            // OPL_delete は memory[] を解放するので、差し替えていたら emu8950 自身のものに戻す
+            if (opl->adpcm && y8950_own[0]) {
+                opl->adpcm->memory[0] = y8950_own[0];
+                opl->adpcm->memory[1] = y8950_own[1];
+            }
+            OPL_delete(opl);
+            opl = nullptr;
+        }
         if (scc)    { SCC_delete(scc);  scc  = nullptr; }
         if (sng)    { SNG_delete(sng);  sng  = nullptr; }
         if (opl2ex) { Y8960OPL_delete(opl2ex);  opl2ex = nullptr; }
@@ -216,6 +255,66 @@ static void routeOpllParts(Chip* chip, void (*setPan)(Chip*, uint32_t, uint8_t))
 }
 
 // =========================================================
+//  外部メモリ
+// =========================================================
+// mappings の添字。チップが持たない種類なら -1
+static int memorySpace(ChipKind kind, FmMemoryType type) {
+    switch (kind) {
+    case ChipKind::Y8950:
+        if (type == FM_MEM_ADPCM_B)         return 0;
+        if (type == FM_MEM_ADPCM_B_ROMMODE) return 1;
+        return -1;
+    case ChipKind::OPL2EX:
+        // ROM モードのメモリは無い。08h の ROM ビットを立てても RAM を読む
+        return type == FM_MEM_ADPCM_B ? 0 : -1;
+    default:
+        return -1;
+    }
+}
+
+static void applyOpl2exMemory(ChipEntry& c) {
+    c.adpcm_map.clear();
+    if (c.mappings[0].empty()) {
+        c.adpcm_map.push_back({ 0, kAdpcmSpaceSize, c.adpcm_ram.data(), 1 });
+    } else {
+        for (const auto& m : c.mappings[0])
+            c.adpcm_map.push_back({ m.base, m.size, m.data, (uint8_t)(m.ram ? 1 : 0) });
+    }
+    Y8960OPL_setADPCMMemoryMap(c.opl2ex, c.adpcm_map.data(), (uint32_t)c.adpcm_map.size());
+}
+
+// emu8950 はメモリを 256KB の連続した配列として添字で読み書きするので、割り当ての
+// 表を挟めない。memory[] のポインタを差し替えて表す:
+//   割り当て無し          … emu8950 自身のもの
+//   RAM の割り当てがある  … そのブロック (base 0 で 256KB 以上のものしか受け付けない)
+//   ROM の割り当てだけ    … 0 で埋めたバッファに複製したもの
+// 再生中の wave も同じ配列を指しているので、一緒に差し替える
+static void applyY8950Memory(ChipEntry& c, int space) {
+    OPL_ADPCM* adpcm = c.opl->adpcm;
+    uint8_t* const before = adpcm->memory[space];
+    uint8_t* after = c.y8950_own[space];
+    auto& image = c.y8950_image[space];
+    const auto& maps = c.mappings[space];
+
+    const auto ram = std::find_if(maps.begin(), maps.end(),
+                                  [](const ChipEntry::MemMapping& m) { return m.ram; });
+    if (ram != maps.end()) {
+        after = ram->data;
+    } else if (!maps.empty()) {
+        image.assign(kAdpcmSpaceSize, 0);
+        for (const auto& m : maps) {
+            if (m.base >= kAdpcmSpaceSize) continue;
+            const uint32_t n = std::min(m.size, kAdpcmSpaceSize - m.base);
+            std::memcpy(image.data() + m.base, m.data, n);
+        }
+        after = image.data();
+    }
+    adpcm->memory[space] = after;
+    if (adpcm->wave == before) adpcm->wave = after;
+    if (after != image.data()) std::vector<uint8_t>().swap(image);
+}
+
+// =========================================================
 //  チップ生成
 // =========================================================
 static std::unique_ptr<ChipEntry> createChip(
@@ -277,6 +376,9 @@ static std::unique_ptr<ChipEntry> createChip(
         if (!e->opl) return nullptr;
         OPL_setChipType(e->opl, 0); // Y8950
         OPL_reset(e->opl);
+        if (!e->opl->adpcm) return nullptr;
+        e->y8950_own[0] = e->opl->adpcm->memory[0];
+        e->y8950_own[1] = e->opl->adpcm->memory[1];
         break;
 
     case ChipKind::OPL:
@@ -296,8 +398,8 @@ static std::unique_ptr<ChipEntry> createChip(
     case ChipKind::OPL2EX:
         e->opl2ex = Y8960OPL_new(e->clock, sample_rate);
         if (!e->opl2ex) return nullptr;
-        e->adpcm_ram.assign(kY8960AdpcmRamSize, 0);
-        Y8960OPL_setADPCMMemory(e->opl2ex, e->adpcm_ram.data(), kY8960AdpcmRamSize);
+        e->adpcm_ram.assign(kAdpcmSpaceSize, 0);
+        applyOpl2exMemory(*e);
         break;
 
     case ChipKind::SCC:
@@ -615,21 +717,53 @@ FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemory(
     if (!data && size != 0) return FM_ERR_INVALID_ARG;
     auto& c = *engine->chips[chip_id];
 
-    // Y8950 は ADPCM-B RAM に対応
-    if ((c.kind == ChipKind::Y8950) && c.opl) {
-        if (mem_type == FM_MEM_ADPCM_B) {
-            OPL_writeADPCMData(c.opl, 0, 0, size, data);
-            return FM_OK;
-        }
-    }
-    if ((c.kind == ChipKind::OPL2EX) && c.opl2ex) {
-        if (mem_type == FM_MEM_ADPCM_B) {
-            Y8960OPL_writeADPCMData(c.opl2ex, 0, size, data);
-            return FM_OK;
-        }
+    // Y8950 / OPL2EX の ADPCM-B RAM の先頭へ複製する。SetMemoryEx の割り当てがある間は
+    // コアから見えないが、割り当てが全部外れると見えるようになる
+    uint8_t* dest = nullptr;
+    if (mem_type == FM_MEM_ADPCM_B) {
+        if (c.kind == ChipKind::Y8950)  dest = c.y8950_own[0];
+        if (c.kind == ChipKind::OPL2EX) dest = c.adpcm_ram.data();
     }
     // 他のチップは外部メモリ不要
-    return FM_ERR_UNAVAILABLE;
+    if (!dest) return FM_ERR_UNAVAILABLE;
+    if (size) std::memcpy(dest, data, std::min(size, kAdpcmSpaceSize));
+    return FM_OK;
+}
+
+FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemoryEx(
+    FmEngineHandle engine, uint32_t chip_id,
+    FmMemoryType mem_type, uint32_t base,
+    uint8_t* data, uint32_t size, FmMemoryAccess access)
+{
+    if (!engine || chip_id >= engine->chips.size()) return FM_ERR_INVALID_ARG;
+    if (size == 0) return FM_ERR_INVALID_ARG;
+    auto& c = *engine->chips[chip_id];
+    const int space = memorySpace(c.kind, mem_type);
+    if (space < 0) return FM_ERR_INVALID_ARG;
+
+    const uint64_t lo = base;
+    const uint64_t hi = (uint64_t)base + size;
+    auto overlaps = [lo, hi](const ChipEntry::MemMapping& m) {
+        return lo < (uint64_t)m.base + m.size && (uint64_t)m.base < hi;
+    };
+    auto& maps = c.mappings[space];
+
+    std::lock_guard<std::mutex> lock(engine->write_mutex);
+    if (data) {
+        if (access != FM_ACCESS_ROM && access != FM_ACCESS_RAM) return FM_ERR_INVALID_ARG;
+        if (std::any_of(maps.begin(), maps.end(), overlaps)) return FM_ERR_INVALID_ARG;
+        // emu8950 の配列を丸ごと差し替えることでしか、その場での読み書きを表せない
+        if (c.kind == ChipKind::Y8950 && access == FM_ACCESS_RAM &&
+            (base != 0 || size < kAdpcmSpaceSize))
+            return FM_ERR_UNAVAILABLE;
+        maps.push_back({ base, size, data, access == FM_ACCESS_RAM });
+    } else {
+        maps.erase(std::remove_if(maps.begin(), maps.end(), overlaps), maps.end());
+    }
+
+    if (c.kind == ChipKind::OPL2EX) applyOpl2exMemory(c);
+    if (c.kind == ChipKind::Y8950)  applyY8950Memory(c, space);
+    return FM_OK;
 }
 
 FMENGINE_API uint32_t FMENGINE_CALL FmEngine_GetMemorySize(

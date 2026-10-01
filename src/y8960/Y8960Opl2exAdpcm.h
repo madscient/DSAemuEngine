@@ -7,17 +7,26 @@
 
 #include <stdint.h>
 
+/* One block of the sample memory: addresses [base, base + size) are
+** data[0 .. size). Writes land only in writable blocks. */
+typedef struct __Y8960OPL_ADPCM_REGION {
+  uint32_t base;
+  uint32_t size;
+  uint8_t *data;
+  uint8_t writable;
+} Y8960OPL_ADPCM_REGION;
+
 typedef struct __Y8960OPL_ADPCM {
   uint32_t clk;
 
   uint8_t reg[0x20];
 
-  /* The sample RAM lives outside the circuit, because the cartridge's two
-  ** circuits divide one 256KB SRAM between them. The circuit sees the window
-  ** [ram, ram + ram_size) from its address 0; reads past the window return 0
-  ** and writes past it are dropped. There is no sample ROM. */
-  uint8_t *ram;
-  uint32_t ram_size;
+  /* The sample memory lives outside the circuit, as a list of blocks the
+  ** caller owns, because the cartridge's two circuits divide one 256KB SRAM
+  ** between them in more than one way. Addresses no block covers read 0 and
+  ** drop writes. There is no sample ROM. */
+  const Y8960OPL_ADPCM_REGION *regions;
+  uint32_t region_count;
 
   uint8_t status;
 
@@ -42,6 +51,5 @@ void Y8960OPL_ADPCM_writeReg(Y8960OPL_ADPCM *, uint32_t reg, uint32_t val);
 int16_t Y8960OPL_ADPCM_calc(Y8960OPL_ADPCM *);
 uint8_t Y8960OPL_ADPCM_status(Y8960OPL_ADPCM *);
 void Y8960OPL_ADPCM_resetStatus(Y8960OPL_ADPCM *);
-void Y8960OPL_ADPCM_setMemory(Y8960OPL_ADPCM *, uint8_t *ram, uint32_t size);
-void Y8960OPL_ADPCM_writeRAM(Y8960OPL_ADPCM *, uint32_t start, uint32_t length, const uint8_t *data);
+void Y8960OPL_ADPCM_setMemoryMap(Y8960OPL_ADPCM *, const Y8960OPL_ADPCM_REGION *regions, uint32_t count);
 #endif

@@ -9,6 +9,7 @@
 
 #include "FmEngineApi.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -21,6 +22,11 @@
 #else
 #  include <dlfcn.h>
 #endif
+
+// FmEngine_SetMemoryEx の型。仕様 (FMEngineTest の docs/FmEngineApi.md) にあるが、
+// 写し元の YMEngine の FmEngineApi.h にはまだ無い。ヘッダを写し直したら消す
+static constexpr FmMemoryType FM_MEM_ADPCM_B_ROMMODE = (FmMemoryType)4;
+typedef enum FmMemoryAccess { FM_ACCESS_ROM = 0, FM_ACCESS_RAM = 1 } FmMemoryAccess;
 
 namespace {
 
@@ -43,6 +49,8 @@ struct Api {
     FmResult    (FMENGINE_CALL *GetPartGain)(FmEngineHandle, uint32_t, FmPart, float*, float*);
     FmResult    (FMENGINE_CALL *GetPartMask)(FmEngineHandle, uint32_t, uint32_t*);
     FmResult    (FMENGINE_CALL *SetMemory)(FmEngineHandle, uint32_t, FmMemoryType, const uint8_t*, uint32_t);
+    FmResult    (FMENGINE_CALL *SetMemoryEx)(FmEngineHandle, uint32_t, FmMemoryType, uint32_t,
+                                             uint8_t*, uint32_t, FmMemoryAccess);
     uint32_t    (FMENGINE_CALL *GetMemorySize)(FmEngineHandle, uint32_t, FmMemoryType);
     FmResult    (FMENGINE_CALL *Generate)(FmEngineHandle, float*, float*, uint32_t);
 };
@@ -90,6 +98,7 @@ bool loadApi(const char* path, Api& api) {
     bind(api.GetPartGain,      "FmEngine_GetPartGain");
     bind(api.GetPartMask,      "FmEngine_GetPartMask");
     bind(api.SetMemory,        "FmEngine_SetMemory");
+    bind(api.SetMemoryEx,      "FmEngine_SetMemoryEx");
     bind(api.GetMemorySize,    "FmEngine_GetMemorySize");
     bind(api.Generate,         "FmEngine_Generate");
     return ok;
@@ -261,11 +270,13 @@ std::vector<uint8_t> adpcmData(size_t size) {
 constexpr uint32_t kAdpcmBytes = 4096;
 
 // reg08 を書いてから開始・終了アドレスを書き、再生を始める
-Regs adpcmPlay(uint8_t reg08) {
-    const uint32_t stop = kAdpcmBytes / 4 - 1;  // 256K RAM モードは 4 バイト単位
+// start は 256K RAM モードの番地 (4 バイト単位で数える)
+Regs adpcmPlay(uint8_t reg08, uint32_t start = 0) {
+    const uint32_t from = start / 4;
+    const uint32_t stop = (start + kAdpcmBytes) / 4 - 1;
     return {
         { 0x08, reg08 },
-        { 0x09, 0x00 }, { 0x0A, 0x00 },
+        { 0x09, (uint8_t)(from & 0xFF) }, { 0x0A, (uint8_t)(from >> 8) },
         { 0x0B, (uint8_t)(stop & 0xFF) }, { 0x0C, (uint8_t)(stop >> 8) },
         { 0x10, 0x00 }, { 0x11, 0x80 },
         { 0x12, 0xFF },
@@ -612,6 +623,178 @@ void testSsgs() {
           same(play("SSGS", concat({ junk, ssgNotes(0x00) })), ssg1));
 }
 
+// 07h の REC と MEMORY DATA を立て、0Fh からサンプルを書き込む
+Regs adpcmWrite(const std::vector<uint8_t>& data) {
+    Regs r = { { 0x07, 0x60 } };
+    for (uint8_t b : data) r.push_back({ 0x0F, b });
+    r.push_back({ 0x07, 0x00 });
+    return r;
+}
+
+void testSetMemoryEx() {
+    constexpr uint32_t kSpace = 256 * 1024;
+    const auto data = adpcmData(kAdpcmBytes);
+    const Out ref        = play("OPL2EX", withAdpcm(adpcmPlay(0x00)));
+    const Out empty      = play("OPL2EX", withAdpcm(adpcmPlay(0x00), false));
+    const Out refY8950   = play("Y8950",  withAdpcm(adpcmPlay(0x00)));
+    const Out emptyY8950 = play("Y8950",  withAdpcm(adpcmPlay(0x00), false));
+
+    // --- OPL2EX ---
+    {
+        std::vector<uint8_t> block(kSpace, 0);
+        Engine e;
+        uint32_t a = e.add("OPL2EX"), b = e.add("OPL2EX");
+        bool ok = A.SetMemoryEx(e.h, a, FM_MEM_ADPCM_B, 0, block.data(), kSpace, FM_ACCESS_RAM) == FM_OK &&
+                  A.SetMemoryEx(e.h, b, FM_MEM_ADPCM_B, 0, block.data(), kSpace, FM_ACCESS_RAM) == FM_OK;
+        e.write(a, adpcmWrite(data));
+        check("SetMemoryEx: a chip writes 0Fh straight into a RAM block",
+              ok && std::equal(data.begin(), data.end(), block.begin()));
+        e.write(b, adpcmPlay(0x00));
+        check("SetMemoryEx: two OPL2EX share one RAM block", same(e.render(), ref));
+    }
+    {
+        std::vector<uint8_t> block(kSpace, 0);
+        Out o = play("OPL2EX", [&](Engine& e, uint32_t id) {
+            A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 0, block.data(), kSpace, FM_ACCESS_RAM);
+            std::copy(data.begin(), data.end(), block.begin());
+            e.write(id, adpcmPlay(0x00));
+        });
+        check("SetMemoryEx: the chip sees what the caller wrote into a RAM block", same(o, ref));
+    }
+    {
+        // 分割: 前半を 1 個目、後半を 2 個目の 0 番地に
+        std::vector<uint8_t> block(kSpace, 0);
+        std::copy(data.begin(), data.end(), block.begin() + kSpace / 2);
+        auto split = [&](bool second) {
+            Engine e;
+            uint32_t a = e.add("OPL2EX"), b = e.add("OPL2EX");
+            A.SetMemoryEx(e.h, a, FM_MEM_ADPCM_B, 0, block.data(), kSpace / 2, FM_ACCESS_RAM);
+            A.SetMemoryEx(e.h, b, FM_MEM_ADPCM_B, 0, block.data() + kSpace / 2, kSpace / 2, FM_ACCESS_RAM);
+            e.write(second ? b : a, adpcmPlay(0x00));
+            return e.render();
+        };
+        check("SetMemoryEx: two OPL2EX split one block in halves",
+              same(split(true), ref) && same(split(false), empty));
+    }
+    {
+        // base: 64KB から先に置いたデータは 64KB から再生すると鳴り、0 番地は空いている
+        std::vector<uint8_t> block(data);
+        auto at = [&](uint32_t start) {
+            return play("OPL2EX", [&](Engine& e, uint32_t id) {
+                A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 0x10000, block.data(), (uint32_t)block.size(), FM_ACCESS_RAM);
+                e.write(id, adpcmPlay(0x00, start));
+            });
+        };
+        check("SetMemoryEx: base places a block, and addresses no block covers read 0",
+              same(at(0x10000), ref) && same(at(0), empty));
+    }
+    {
+        std::vector<uint8_t> rom(data);
+        Out o = play("OPL2EX", [&](Engine& e, uint32_t id) {
+            A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 0, rom.data(), (uint32_t)rom.size(), FM_ACCESS_ROM);
+            e.write(id, adpcmWrite(std::vector<uint8_t>(kAdpcmBytes, 0x88)));
+            e.write(id, adpcmPlay(0x00));
+        });
+        check("SetMemoryEx: writes to a ROM block are dropped", rom == data && same(o, ref));
+    }
+    {
+        // SetMemory で入れた内容は、割り当てがある間は見えず、外すと戻る
+        std::vector<uint8_t> block(kSpace, 0);
+        auto legacy = [&](bool unmap) {
+            return play("OPL2EX", [&](Engine& e, uint32_t id) {
+                A.SetMemory(e.h, id, FM_MEM_ADPCM_B, data.data(), (uint32_t)data.size());
+                A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 0, block.data(), kSpace, FM_ACCESS_RAM);
+                if (unmap) A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 0, nullptr, kSpace, FM_ACCESS_ROM);
+                e.write(id, adpcmPlay(0x00));
+            });
+        };
+        check("SetMemoryEx: SetMemory contents hide while mapped and return when unmapped",
+              same(legacy(false), empty) && same(legacy(true), ref));
+    }
+    {
+        std::vector<uint8_t> block(kSpace, 0);
+        Engine e;
+        uint32_t x = e.add("OPL2EX"), opl2 = e.add("OPL2");
+        bool ok = A.SetMemoryEx(e.h, x, FM_MEM_ADPCM_B, 0, block.data(), 4096, FM_ACCESS_RAM) == FM_OK;
+        check("SetMemoryEx: overlapping a mapping is rejected",
+              ok && A.SetMemoryEx(e.h, x, FM_MEM_ADPCM_B, 2048, block.data(), 4096, FM_ACCESS_RAM) == FM_ERR_INVALID_ARG);
+        check("SetMemoryEx: a mapping next to another is accepted",
+              A.SetMemoryEx(e.h, x, FM_MEM_ADPCM_B, 4096, block.data() + 4096, 4096, FM_ACCESS_RAM) == FM_OK);
+        check("SetMemoryEx: size 0, an unknown access or chip_id is rejected",
+              A.SetMemoryEx(e.h, x, FM_MEM_ADPCM_B, 0x20000, block.data(), 0, FM_ACCESS_RAM) == FM_ERR_INVALID_ARG &&
+              A.SetMemoryEx(e.h, x, FM_MEM_ADPCM_B, 0x20000, block.data(), 16, (FmMemoryAccess)2) == FM_ERR_INVALID_ARG &&
+              A.SetMemoryEx(e.h, 99, FM_MEM_ADPCM_B, 0x20000, block.data(), 16, FM_ACCESS_RAM) == FM_ERR_INVALID_ARG);
+        check("SetMemoryEx: memory the chip does not have is rejected",
+              A.SetMemoryEx(e.h, x, FM_MEM_ADPCM_B_ROMMODE, 0, block.data(), 16, FM_ACCESS_RAM) == FM_ERR_INVALID_ARG &&
+              A.SetMemoryEx(e.h, opl2, FM_MEM_ADPCM_B, 0, block.data(), 16, FM_ACCESS_RAM) == FM_ERR_INVALID_ARG);
+        check("SetMemoryEx: unmapping a range with nothing in it succeeds",
+              A.SetMemoryEx(e.h, x, FM_MEM_ADPCM_B, 0x30000, nullptr, 16, FM_ACCESS_ROM) == FM_OK);
+    }
+
+    // --- Y8950 (素の emu8950。RAM はメモリ空間 1 つ分を丸ごと渡すときだけ) ---
+    {
+        std::vector<uint8_t> block(kSpace, 0);
+        Engine e;
+        uint32_t id = e.add("Y8950");
+        bool ok = A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 0, block.data(), kSpace, FM_ACCESS_RAM) == FM_OK;
+        e.write(id, adpcmWrite(data));
+        check("SetMemoryEx Y8950: a whole-space RAM block is read and written in place",
+              ok && std::equal(data.begin(), data.end(), block.begin()));
+        e.write(id, adpcmPlay(0x00));
+        check("SetMemoryEx Y8950: it plays what was written", same(e.render(), refY8950));
+    }
+    {
+        std::vector<uint8_t> block(kSpace, 0);
+        Engine e;
+        uint32_t a = e.add("Y8950"), b = e.add("Y8950");
+        A.SetMemoryEx(e.h, a, FM_MEM_ADPCM_B, 0, block.data(), kSpace, FM_ACCESS_RAM);
+        A.SetMemoryEx(e.h, b, FM_MEM_ADPCM_B, 0, block.data(), kSpace, FM_ACCESS_RAM);
+        e.write(a, adpcmWrite(data));
+        e.write(b, adpcmPlay(0x00));
+        check("SetMemoryEx Y8950: two Y8950 share one whole-space RAM block", same(e.render(), refY8950));
+    }
+    {
+        std::vector<uint8_t> block(kSpace, 0);
+        Engine e;
+        uint32_t id = e.add("Y8950");
+        check("SetMemoryEx Y8950: a RAM block that is not the whole space is unavailable",
+              A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 0, block.data(), kSpace / 2, FM_ACCESS_RAM) == FM_ERR_UNAVAILABLE &&
+              A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 4, block.data(), kSpace, FM_ACCESS_RAM) == FM_ERR_UNAVAILABLE);
+    }
+    {
+        // ROM モードのメモリ。ROM モードは 32 バイト単位だが、0 番地から読み終える前に
+        // 止めるので、RAM モードで同じデータを鳴らしたものと一致する
+        std::vector<uint8_t> rom(data);
+        std::vector<uint8_t> block(kSpace, 0);
+        std::copy(data.begin(), data.end(), block.begin());
+        auto romMode = [&](FmMemoryAccess access) {
+            return play("Y8950", [&](Engine& e, uint32_t id) {
+                uint8_t* p = access == FM_ACCESS_ROM ? rom.data() : block.data();
+                uint32_t n = access == FM_ACCESS_ROM ? (uint32_t)rom.size() : kSpace;
+                A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B_ROMMODE, 0, p, n, access);
+                e.write(id, adpcmPlay(0x01));
+            });
+        };
+        check("SetMemoryEx Y8950: ROM-mode memory takes a ROM block", same(romMode(FM_ACCESS_ROM), refY8950));
+        check("SetMemoryEx Y8950: ROM-mode memory takes a whole-space RAM block", same(romMode(FM_ACCESS_RAM), refY8950));
+        check("  (without a mapping, ROM mode does not play the data)",
+              maxDiff(play("Y8950", withAdpcm(adpcmPlay(0x01))).l, refY8950.l) > kSilent);
+    }
+    {
+        std::vector<uint8_t> zeros(kAdpcmBytes, 0);
+        auto legacy = [&](bool unmap) {
+            return play("Y8950", [&](Engine& e, uint32_t id) {
+                A.SetMemory(e.h, id, FM_MEM_ADPCM_B, data.data(), (uint32_t)data.size());
+                A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 0, zeros.data(), (uint32_t)zeros.size(), FM_ACCESS_ROM);
+                if (unmap) A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 0, nullptr, kSpace, FM_ACCESS_ROM);
+                e.write(id, adpcmPlay(0x00));
+            });
+        };
+        check("SetMemoryEx Y8950: SetMemory contents hide while mapped and return when unmapped",
+              same(legacy(false), emptyY8950) && same(legacy(true), refY8950));
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -629,6 +812,7 @@ int main(int argc, char** argv) {
     testOpl2exFm();
     testOpl2exAdpcm();
     testSsgs();
+    testSetMemoryEx();
 
     std::printf("%s (%d failed)\n", g_fails ? "FAILED" : "PASSED", g_fails);
     return g_fails ? 1 : 0;

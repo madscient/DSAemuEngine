@@ -9,8 +9,9 @@
    linked into the same binary for the Y8950 / OPL / OPL2 chips.
 
    The ADPCM has no sample ROM, so bit 0 of register 08h is ignored, and its
-   sample RAM is a window handed in from outside (Y8960OPL_setADPCMMemory),
-   because the cartridge's two circuits divide one 256KB SRAM between them.
+   sample memory is a list of blocks handed in from outside
+   (Y8960OPL_setADPCMMemoryMap), because the cartridge's two circuits divide
+   one 256KB SRAM between them.
 */
 #ifndef _Y8960_OPL2EX_CORE_H_
 #define _Y8960_OPL2EX_CORE_H_
@@ -239,15 +240,11 @@ uint8_t Y8960OPL_readIO(Y8960OPL *opl);
 uint8_t Y8960OPL_status(Y8960OPL *opl);
 
 /**
- * Attach the ADPCM sample RAM window. The caller owns the memory and must keep
- * it alive while the chip runs; until this is called the ADPCM reads silence.
+ * Map the ADPCM sample memory. The caller owns both the list and the blocks
+ * and must keep them alive and unchanged in shape while the chip runs; until
+ * this is called the ADPCM reads silence.
  */
-void Y8960OPL_setADPCMMemory(Y8960OPL *opl, uint8_t *ram, uint32_t size);
-
-/**
- * Copy data into the attached window, clipped at its end.
- */
-void Y8960OPL_writeADPCMData(Y8960OPL *opl, uint32_t start, uint32_t length, const uint8_t *data);
+void Y8960OPL_setADPCMMemoryMap(Y8960OPL *opl, const Y8960OPL_ADPCM_REGION *regions, uint32_t count);
 
 /* for compatibility */
 #define Y8960OPL_set_rate Y8960OPL_setRate

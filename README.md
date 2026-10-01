@@ -135,6 +135,31 @@ FmEngineApi の任意エクスポート `FmEngine_SetPartGain` / `FmEngine_GetPa
 部位のゲインの既定値は 1.0 です。実際に掛かるゲインは `FmEngine_SetGain` のゲインと
 部位のゲインの積です。
 
+## 外部メモリの割り当て
+
+`FmEngine_SetMemory` に加えて、FmEngineApi の任意エクスポート `FmEngine_SetMemoryEx` に
+対応しています。呼び出し側のメモリブロックをチップのメモリの `[base, base + size)` に
+割り当てます。`FM_ACCESS_RAM` で割り当てたブロックはエンジンが複製せずにその場で
+読み書きするので、複数のチップや他のデバイスと共有できます。
+
+| チップ | `mem_type` | 割り当てられるもの |
+|---|---|---|
+| `OPL2EX` | `FM_MEM_ADPCM_B` | ROM / RAM とも、任意の `base` と `size` |
+| `Y8950` | `FM_MEM_ADPCM_B` (RAM モードのメモリ) | ROM は任意の `base` と `size`。RAM は `base` が 0 で `size` が 256KB 以上のものだけ |
+| `Y8950` | `FM_MEM_ADPCM_B_ROMMODE` (ROM モードのメモリ) | 同上 |
+
+- 上の表以外の組み合わせは `FM_ERR_INVALID_ARG` です。`Y8950` に表の条件を満たさない
+  RAM を割り当てると `FM_ERR_UNAVAILABLE` です
+- 同じ RAM ブロックを複数のチップに割り当てると、チップ間でメモリを共有します。
+  `Y8950` どうしでも、256KB 以上のブロックを `base` 0 に割り当てれば共有できます
+- 割り当ての無い番地は読むと 0 です。割り当てが 1 つでもある間、そのメモリは割り当て
+  だけで決まり、`FmEngine_SetMemory` で書き込んだ内容は見えません。割り当てをすべて
+  外すと、`FmEngine_SetMemory` で書き込んだ内容が見えるようになります
+- `FM_ACCESS_ROM` で割り当てたブロックへのチップからの書き込みは、`OPL2EX` では
+  捨てられます。`Y8950` では捨てられず、エンジン内の複製に書き込まれます
+  (ブロック自体は書き換わりません)。割り当ての無い番地への書き込みも同様です
+- `Y8950` は ROM モードでも `0x0F` からの書き込みを ROM モードのメモリに書き込みます
+
 ## チップ固有の注意事項
 
 ### DCSG (SN76489)
@@ -144,7 +169,8 @@ FmEngineApi の任意エクスポート `FmEngine_SetPartGain` / `FmEngine_GetPa
 
 ### Y8950 (ADPCM)
 ADPCM データは `FmEngine_SetMemory(chip_id, FM_MEM_ADPCM_B, data, size)` で
-書き込みます。
+RAM の先頭から書き込みます。ROM モードのメモリや共有する RAM は
+`FmEngine_SetMemoryEx` で割り当てます ([外部メモリの割り当て](#外部メモリの割り当て))。
 
 ### SCC / SCCP
 `reg` は Z80 メモリ空間上のレジスタ窓オフセットです。窓の先頭アドレス
@@ -202,10 +228,17 @@ YM3812 に Y8950 の ADPCM-B を足したもので、レジスタ配置は Y8950
   RAM の先頭から書き込みます。256KB を超える部分は捨てられます。
   `0x07` の REC と MEMORY DATA を立てて `0x0F` に書き込む方法でも書けます
 - `0x07` の bit3 (SP-OFF) を立てると ADPCM は無音になります
-- 実機は 2 回路を持ち、2 回路で 256KB の SRAM を分け合います。本エンジンでは
-  `OPL2EX` を 1 個追加するごとに 256KB の RAM を別々に持ち、チップ間で
-  サンプルメモリは共有されません。2 回路を鳴らすときは `OPL2EX` を 2 個追加し、
-  それぞれに `FmEngine_SetMemory` してください
+- 実機は 2 回路を持ち、2 回路で 256KB の SRAM を分け合います。2 回路を鳴らすときは
+  `OPL2EX` を 2 個追加します。`FmEngine_SetMemory` で書き込むと、各チップが別々に
+  持つ 256KB の RAM に入ります。2 個で SRAM を分け合うには、呼び出し側で 256KB の
+  ブロックを用意し、`FmEngine_SetMemoryEx` で `FM_ACCESS_RAM` として割り当てます
+  ([外部メモリの割り当て](#外部メモリの割り当て))
+
+  | 分け方 | 1 個目 | 2 個目 |
+  |---|---|---|
+  | 共有 | ブロック全体を `base` 0 に | 同じブロック全体を `base` 0 に |
+  | 分割 | 前半 128KB を `base` 0 に | 後半 128KB を `base` 0 に |
+  | 片寄せ | ブロック全体を `base` 0 に | 割り当てない |
 
 ### OPLLEX (Y8960 拡張 OPLL 部)
 

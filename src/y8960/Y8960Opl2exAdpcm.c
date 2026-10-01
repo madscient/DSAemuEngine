@@ -48,8 +48,8 @@ Y8960OPL_ADPCM *Y8960OPL_ADPCM_new(uint32_t clk) {
     return NULL;
 
   _this->clk = clk;
-  _this->ram = NULL;
-  _this->ram_size = 0;
+  _this->regions = NULL;
+  _this->region_count = 0;
 
   Y8960OPL_ADPCM_reset(_this);
 
@@ -61,12 +61,25 @@ void Y8960OPL_ADPCM_delete(Y8960OPL_ADPCM *_this) {
 }
 
 static inline uint8_t read_mem(Y8960OPL_ADPCM *_this, uint32_t addr) {
-  return addr < _this->ram_size ? _this->ram[addr] : 0;
+  uint32_t i;
+  for (i = 0; i < _this->region_count; i++) {
+    const Y8960OPL_ADPCM_REGION *r = &_this->regions[i];
+    if (addr >= r->base && addr - r->base < r->size)
+      return r->data[addr - r->base];
+  }
+  return 0;
 }
 
 static inline void write_mem(Y8960OPL_ADPCM *_this, uint32_t addr, uint8_t data) {
-  if (addr < _this->ram_size)
-    _this->ram[addr] = data;
+  uint32_t i;
+  for (i = 0; i < _this->region_count; i++) {
+    const Y8960OPL_ADPCM_REGION *r = &_this->regions[i];
+    if (addr >= r->base && addr - r->base < r->size) {
+      if (r->writable)
+        r->data[addr - r->base] = data;
+      return;
+    }
+  }
 }
 
 void Y8960OPL_ADPCM_reset(Y8960OPL_ADPCM *_this) {
@@ -264,15 +277,7 @@ void Y8960OPL_ADPCM_resetStatus(Y8960OPL_ADPCM *_this) {
   _this->status = 0;
 }
 
-void Y8960OPL_ADPCM_setMemory(Y8960OPL_ADPCM *_this, uint8_t *ram, uint32_t size) {
-  _this->ram = ram;
-  _this->ram_size = ram ? size : 0;
-}
-
-void Y8960OPL_ADPCM_writeRAM(Y8960OPL_ADPCM *_this, uint32_t start, uint32_t length, const uint8_t *data) {
-  if (start >= _this->ram_size) return;
-  if (length > _this->ram_size - start) {
-    length = _this->ram_size - start;
-  }
-  memcpy(_this->ram + start, data, length);
+void Y8960OPL_ADPCM_setMemoryMap(Y8960OPL_ADPCM *_this, const Y8960OPL_ADPCM_REGION *regions, uint32_t count) {
+  _this->regions = regions;
+  _this->region_count = regions ? count : 0;
 }

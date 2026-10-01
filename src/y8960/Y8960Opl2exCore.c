@@ -1330,14 +1330,8 @@ uint8_t Y8960OPL_status(Y8960OPL *opl) {
   return status & 0x7f; // IRQ = 0
 }
 
-void Y8960OPL_setADPCMMemory(Y8960OPL *opl, uint8_t *ram, uint32_t size) {
+void Y8960OPL_setADPCMMemoryMap(Y8960OPL *opl, const Y8960OPL_ADPCM_REGION *regions, uint32_t count) {
   if (opl->adpcm != NULL) {
-    Y8960OPL_ADPCM_setMemory(opl->adpcm, ram, size);
-  }
-}
-
-void Y8960OPL_writeADPCMData(Y8960OPL *opl, uint32_t start, uint32_t length, const uint8_t *data) {
-  if (opl->adpcm != NULL) {
-    Y8960OPL_ADPCM_writeRAM(opl->adpcm, start, length, data);
+    Y8960OPL_ADPCM_setMemoryMap(opl->adpcm, regions, count);
   }
 }
