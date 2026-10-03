@@ -46,6 +46,7 @@ emu8950 / emu2413 / emu2149 を改造したコアで提供します。
 | `SSGS`   | Y8960 SSGS (YMZ705 の SSG 部相当) | SSG の動作クロック / 8 (3.579545 MHz で 223,721 Hz) |
 
 `FmEngine_GetSupportedChip` はこの表の順にチップ名を返します。
+ネイティブレートは、チップのコアが内部で音を生成するレートです。
 
 クロックは `FmEngine_AddChip` の `clock` 引数で必ず指定します。エンジンは既定の
 クロックを持たず、0 を渡すと `FM_ERR_INVALID_ARG` を返します。

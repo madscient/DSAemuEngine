@@ -37,7 +37,6 @@ struct Api {
     decltype(&FmEngine_GetSupportedChip) GetSupportedChip;
     decltype(&FmEngine_AddChip)          AddChip;
     decltype(&FmEngine_GetChipName)      GetChipName;
-    decltype(&FmEngine_GetNativeRate)    GetNativeRate;
     decltype(&FmEngine_GetSampleRate)    GetSampleRate;
     decltype(&FmEngine_Write)            Write;
     decltype(&FmEngine_SetGain)          SetGain;
@@ -87,7 +86,6 @@ bool loadApi(const char* path, Api& api) {
     bind(api.GetSupportedChip, "FmEngine_GetSupportedChip");
     bind(api.AddChip,          "FmEngine_AddChip");
     bind(api.GetChipName,      "FmEngine_GetChipName");
-    bind(api.GetNativeRate,    "FmEngine_GetNativeRate");
     bind(api.GetSampleRate,    "FmEngine_GetSampleRate");
     bind(api.Write,            "FmEngine_Write");
     bind(api.SetGain,          "FmEngine_SetGain");
@@ -101,8 +99,9 @@ bool loadApi(const char* path, Api& api) {
     bind(api.SetMemory,        "FmEngine_SetMemory");
     bind(api.SetMemoryEx,      "FmEngine_SetMemoryEx");
     bind(api.Generate,         "FmEngine_Generate");
-    // 部位と外部メモリを番号で指定していた頃の関数。仕様から外れた
-    for (const char* name : { "FmEngine_GetPartMask", "FmEngine_GetMemorySize" }) {
+    // 仕様から外れた関数
+    for (const char* name : { "FmEngine_GetPartMask", "FmEngine_GetMemorySize",
+                              "FmEngine_GetNativeRate" }) {
         if (findSymbol(lib, name)) { std::printf("stale export: %s\n", name); ok = false; }
     }
     return ok;
@@ -330,10 +329,6 @@ void testChipList() {
 
     uint32_t opl2ex = e.add("OPL2EX");
     uint32_t opllex = e.add("OPLLEX");
-    check("OPL2EX native rate is clock/72",
-          A.GetNativeRate(e.h, opl2ex) == 3579545 / 72);
-    check("OPLLEX native rate is clock/72",
-          A.GetNativeRate(e.h, opllex) == 3579545 / 72);
     check("GetChipName returns the added names",
           std::strcmp(A.GetChipName(e.h, opl2ex), "OPL2EX") == 0 &&
           std::strcmp(A.GetChipName(e.h, opllex), "OPLLEX") == 0);
@@ -602,13 +597,6 @@ void testSsgs() {
           same(play("SSGS", ssgNotes(0x20)), ssg));
     check("SSGS: from 5.12MHz up the SSG runs at a third of the clock",
           same(play("SSGS", 6144000, ssgNotes(0x00)), play("SSG", 2048000, ssgNotes(0x00))));
-    {
-        Engine e;
-        uint32_t def = e.add("SSGS"), s6m = e.add("SSGS", 6144000);
-        check("SSGS: native rate is the SSG clock / 8",
-              A.GetNativeRate(e.h, def) == 3579545 / 2 / 8 &&
-              A.GetNativeRate(e.h, s6m) == 6144000 / 3 / 8);
-    }
     check("SSGS: a silent chip puts out exactly zero", [] {
         Out o = play("SSGS", Regs{});
         return allZero(o.l) && allZero(o.r);

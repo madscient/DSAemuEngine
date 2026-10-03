@@ -81,9 +81,7 @@ static NameList partNames(ChipKind kind) {
     case ChipKind::VRC7:
         return { kOpllParts, kPartSlots };
     default:
-        // OPLLEX は、Y8960 の中でメロディとリズムが別々の出力になるのか分かって
-        // いないので部位を持たせていない。出力は 2 系統に分けて取り出してあり
-        // (routeOpllParts)、持たせるならここに加えるだけでよい
+        // OPLLEX は部位を出さない
         return { nullptr, 0 };
     }
 }
@@ -116,7 +114,6 @@ static int findName(NameList list, const char* name) {
 struct ChipEntry {
     ChipKind  kind;
     std::string name;
-    uint32_t  sample_rate;  // エンジンのサンプルレート
     uint32_t  clock;        // マスタークロック
 
     // 各コアへのポインタ (使用するのは kind に応じた1つのみ)
@@ -220,45 +217,13 @@ static const ChipDesc* findChipDesc(const char* name) {
 }
 
 // =========================================================
-//  ネイティブレート取得ヘルパー
+//  クロック
 // =========================================================
 // SSGS の clock はマスタークロック (YMZ705 の XI ピン) で、SSG はそれを分周した
 // クロックで動く。分周比を選ぶ S6M ピンに当たる指定が無いので、EPSGemuEngine の
 // SSGS と同じく 5.12MHz 未満なら 1/2、以上なら 1/3 とする
 static uint32_t ssgsUnitClock(uint32_t clock) {
     return clock < 5120000 ? clock / 2 : clock / 3;
-}
-
-static uint32_t nativeRate(const ChipEntry& c) {
-    switch (c.kind) {
-    case ChipKind::SSG:
-        // YM2149: clk / 8 (internal div) then /1 for output
-        // PSG_new で rate を sample_rate に設定しているので
-        // 実際のネイティブはclk/8; ただしクロックが2MHzなら250000
-        return c.clock / 8;
-    case ChipKind::OPLL:
-    case ChipKind::OPLLP:
-    case ChipKind::OPLLX:
-    case ChipKind::VRC7:
-    case ChipKind::OPLLEX:
-        return c.clock / 72;
-    case ChipKind::Y8950:
-    case ChipKind::OPL:
-    case ChipKind::OPL2:
-    case ChipKind::OPL2EX:
-        return c.clock / 72;
-    case ChipKind::SCC:
-    case ChipKind::SCCP:
-        // emu2212 の内部ステップは clk/2 (sccstep)。
-        // 発音周波数 clk/(32*(N+1)) は 1波形サンプルあたり16ステップで導かれる
-        return c.clock / 2;
-    case ChipKind::DCSG:
-        // SN76489: clk / 16 ≈ 223722 at 3.58MHz
-        return c.clock / 16;
-    case ChipKind::SSGS:
-        return ssgsUnitClock(c.clock) / 8;
-    }
-    return c.sample_rate;
 }
 
 // =========================================================
@@ -327,7 +292,6 @@ static std::unique_ptr<ChipEntry> createChip(
     auto e = std::make_unique<ChipEntry>();
     e->kind        = desc.kind;
     e->name        = desc.name;
-    e->sample_rate = sample_rate;
     e->clock       = clock;
 
     switch (desc.kind) {
@@ -372,6 +336,9 @@ static std::unique_ptr<ChipEntry> createChip(
         // Y8960OPLL_new が 4 バンクの音色の読み込みとリセットまで済ませる
         e->opllex = Y8960OPLL_new(e->clock, sample_rate);
         if (!e->opllex) return nullptr;
+        // 部位は出さないが、OPLL 系と同じくメロディとリズムを分けて取り出し、等倍で
+        // 混ぜ直す。分けずに取り出すと、レート変換が働くときに両者が重なるところで
+        // 出力が 1 LSB 変わる
         routeOpllParts(e->opllex, Y8960OPLL_setPan);
         break;
 
@@ -629,13 +596,6 @@ FMENGINE_API const char* FMENGINE_CALL FmEngine_GetChipName(
 {
     if (!engine || chip_id >= engine->chips.size()) return nullptr;
     return engine->chips[chip_id]->name.c_str();
-}
-
-FMENGINE_API uint32_t FMENGINE_CALL FmEngine_GetNativeRate(
-    FmEngineHandle engine, uint32_t chip_id)
-{
-    if (!engine || chip_id >= engine->chips.size()) return 0;
-    return nativeRate(*engine->chips[chip_id]);
 }
 
 FMENGINE_API uint32_t FMENGINE_CALL FmEngine_GetSampleRate(FmEngineHandle engine) {
