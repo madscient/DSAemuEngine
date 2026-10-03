@@ -28,32 +28,12 @@
 #include <algorithm>
 
 // =========================================================
-//  FmEngine_SetMemoryEx の型
-//  仕様 (FMEngineTest の docs/FmEngineApi.md) にあるが、写し元の YMEngine の
-//  FmEngineApi.h にはまだ無い。ヘッダを写し直すとここが重複定義になるので消す
-// =========================================================
-static constexpr FmMemoryType FM_MEM_ADPCM_B_ROMMODE = (FmMemoryType)4;
-
-typedef enum FmMemoryAccess {
-    FM_ACCESS_ROM = 0,
-    FM_ACCESS_RAM = 1,
-} FmMemoryAccess;
-
-extern "C" FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemoryEx(
-    FmEngineHandle engine, uint32_t chip_id,
-    FmMemoryType mem_type, uint32_t base,
-    uint8_t* data, uint32_t size, FmMemoryAccess access);
-
-// =========================================================
 //  定数
 // =========================================================
 static constexpr float kOutputScale = 1.0f / 32768.0f;
 
 // ADPCM-B が番地を引ける範囲。Y8950 も OPL2EX も 256KB
 static constexpr uint32_t kAdpcmSpaceSize = 256 * 1024;
-
-// 部位マスクが uint32_t なので、FmPart の番号は 0〜31 に収まる
-static constexpr uint32_t kPartSlots = 32;
 
 // =========================================================
 //  チップ種別列挙
@@ -76,6 +56,61 @@ enum class ChipKind {
 };
 
 // =========================================================
+//  部位と外部メモリの名前
+//  表の添字が FmEngine_GetPartName / FmEngine_GetMemoryName の index で、
+//  そのまま ChipEntry の part_gain / mappings の添字にもなる
+// =========================================================
+struct NameList {
+    const char* const* names;
+    uint32_t           count;
+};
+
+// routeOpllParts が L / R に振り分ける順
+enum : uint32_t { kPartMelody, kPartRhythm, kPartSlots };
+static const char* const kOpllParts[kPartSlots] = { "MELODY", "RHYTHM" };
+
+// emu8950 の memory[] の添字と同じ並び (0 が RAM モード、1 が ROM モードのメモリ)
+enum : uint32_t { kMemAdpcmB, kMemAdpcmBRomMode, kMemorySlots };
+static const char* const kAdpcmMemories[kMemorySlots] = { "ADPCM_B", "ADPCM_B_ROMMODE" };
+
+static NameList partNames(ChipKind kind) {
+    switch (kind) {
+    case ChipKind::OPLL:
+    case ChipKind::OPLLP:
+    case ChipKind::OPLLX:
+    case ChipKind::VRC7:
+        return { kOpllParts, kPartSlots };
+    default:
+        // OPLLEX は、Y8960 の中でメロディとリズムが別々の出力になるのか分かって
+        // いないので部位を持たせていない。出力は 2 系統に分けて取り出してあり
+        // (routeOpllParts)、持たせるならここに加えるだけでよい
+        return { nullptr, 0 };
+    }
+}
+
+static NameList memoryNames(ChipKind kind) {
+    switch (kind) {
+    case ChipKind::Y8950:
+        return { kAdpcmMemories, kMemorySlots };
+    case ChipKind::OPL2EX:
+        // ROM モードのメモリは無い (08h の ROM ビットを立てても RAM を読む) ので、
+        // 先頭の ADPCM_B だけ
+        return { kAdpcmMemories, 1 };
+    default:
+        return { nullptr, 0 };
+    }
+}
+
+// 一覧の添字。一覧に無い名前と nullptr は -1
+static int findName(NameList list, const char* name) {
+    if (!name) return -1;
+    for (uint32_t i = 0; i < list.count; ++i)
+        if (strcmp(list.names[i], name) == 0)
+            return (int)i;
+    return -1;
+}
+
+// =========================================================
 //  チップエントリ
 // =========================================================
 struct ChipEntry {
@@ -94,14 +129,14 @@ struct ChipEntry {
     Y8960OPLL* opllex = nullptr;
     Y8960SSG*  ssgs[2] = { nullptr, nullptr };
 
-    // FmEngine_SetMemoryEx の割り当て。[0] が FM_MEM_ADPCM_B、[1] が FM_MEM_ADPCM_B_ROMMODE
+    // FmEngine_SetMemoryEx の割り当て
     struct MemMapping {
         uint32_t base;
         uint32_t size;
         uint8_t* data;
         bool     ram;
     };
-    std::vector<MemMapping> mappings[2];
+    std::vector<MemMapping> mappings[kMemorySlots];
 
     // OPL2EX: FmEngine_SetMemory の書き込み先。割り当てが 1 つも無い間だけコアから見える
     std::vector<uint8_t> adpcm_ram;
@@ -109,8 +144,8 @@ struct ChipEntry {
     std::vector<Y8960OPL_ADPCM_REGION> adpcm_map;
 
     // Y8950: emu8950 が自分で確保した RAM / ROM と、ROM の割り当てを複製する先
-    uint8_t* y8950_own[2] = { nullptr, nullptr };
-    std::vector<uint8_t> y8950_image[2];
+    uint8_t* y8950_own[kMemorySlots] = { nullptr, nullptr };
+    std::vector<uint8_t> y8950_image[kMemorySlots];
 
     float gain_l = 1.0f;
     float gain_r = 1.0f;
@@ -156,24 +191,23 @@ struct FmEngineOpaque {
 struct ChipDesc {
     const char* name;
     ChipKind    kind;
-    uint32_t    default_clock;
 };
 
 static const ChipDesc kChipTable[] = {
-    { "SSG",   ChipKind::SSG,   2000000  },  // AY-3-8910 / YM2149
-    { "OPLL",  ChipKind::OPLL,  3579545  },  // YM2413
-    { "OPLLP", ChipKind::OPLLP, 3579545  },  // YM2413 (281B patches)
-    { "OPLLX", ChipKind::OPLLX, 3579545  },  // YM2413 (extended alias)
-    { "VRC7",  ChipKind::VRC7,  3579545  },  // VRC7
-    { "Y8950", ChipKind::Y8950, 3579545  },  // Y8950
-    { "OPL",   ChipKind::OPL,   3579545  },  // YM3526
-    { "OPL2",  ChipKind::OPL2,  3579545  },  // YM3812
-    { "SCC",   ChipKind::SCC,   3579545  },  // Konami SCC
-    { "SCCP",  ChipKind::SCCP,  3579545  },  // Konami SCC-I (SCC+)
-    { "DCSG",  ChipKind::DCSG,  3579545  },  // SN76489
-    { "OPL2EX", ChipKind::OPL2EX, 3579545 }, // Y8960 拡張 OPL2
-    { "OPLLEX", ChipKind::OPLLEX, 3579545 }, // Y8960 拡張 OPLL
-    { "SSGS",   ChipKind::SSGS,   3579545 }, // Y8960 SSGS (マスタークロック)
+    { "SSG",    ChipKind::SSG    },  // AY-3-8910 / YM2149
+    { "OPLL",   ChipKind::OPLL   },  // YM2413
+    { "OPLLP",  ChipKind::OPLLP  },  // YM2413 (281B patches)
+    { "OPLLX",  ChipKind::OPLLX  },  // YM2413 (extended alias)
+    { "VRC7",   ChipKind::VRC7   },  // VRC7
+    { "Y8950",  ChipKind::Y8950  },  // Y8950
+    { "OPL",    ChipKind::OPL    },  // YM3526
+    { "OPL2",   ChipKind::OPL2   },  // YM3812
+    { "SCC",    ChipKind::SCC    },  // Konami SCC
+    { "SCCP",   ChipKind::SCCP   },  // Konami SCC-I (SCC+)
+    { "DCSG",   ChipKind::DCSG   },  // SN76489
+    { "OPL2EX", ChipKind::OPL2EX },  // Y8960 拡張 OPL2
+    { "OPLLEX", ChipKind::OPLLEX },  // Y8960 拡張 OPLL
+    { "SSGS",   ChipKind::SSGS   },  // Y8960 SSGS (clock はマスタークロック)
 };
 static constexpr uint32_t kChipCount = (uint32_t)(sizeof(kChipTable) / sizeof(kChipTable[0]));
 
@@ -230,21 +264,6 @@ static uint32_t nativeRate(const ChipEntry& c) {
 // =========================================================
 //  部位
 // =========================================================
-static uint32_t partMask(ChipKind kind) {
-    switch (kind) {
-    case ChipKind::OPLL:
-    case ChipKind::OPLLP:
-    case ChipKind::OPLLX:
-    case ChipKind::VRC7:
-        return (1u << FM_PART_OPLL_MELODY) | (1u << FM_PART_OPLL_RHYTHM);
-    default:
-        // OPLLEX は仕様書の部位の表に載っていないので部位を持たせない。
-        // 出力はメロディとリズムに分けて取り出してあり (routeOpllParts)、
-        // 部位を持たせるならこのマスクに加えるだけでよい
-        return 0;
-    }
-}
-
 // emu2413 のパンはステレオ定位のための拡張機能だが、ここではメロディを L、
 // リズムを R に振り分けて 2 系統を別々に取り出すのに使う。OPLL_reset は
 // パンを中央に戻すので、リセットのたびに掛け直すこと
@@ -257,27 +276,12 @@ static void routeOpllParts(Chip* chip, void (*setPan)(Chip*, uint32_t, uint8_t))
 // =========================================================
 //  外部メモリ
 // =========================================================
-// mappings の添字。チップが持たない種類なら -1
-static int memorySpace(ChipKind kind, FmMemoryType type) {
-    switch (kind) {
-    case ChipKind::Y8950:
-        if (type == FM_MEM_ADPCM_B)         return 0;
-        if (type == FM_MEM_ADPCM_B_ROMMODE) return 1;
-        return -1;
-    case ChipKind::OPL2EX:
-        // ROM モードのメモリは無い。08h の ROM ビットを立てても RAM を読む
-        return type == FM_MEM_ADPCM_B ? 0 : -1;
-    default:
-        return -1;
-    }
-}
-
 static void applyOpl2exMemory(ChipEntry& c) {
     c.adpcm_map.clear();
-    if (c.mappings[0].empty()) {
+    if (c.mappings[kMemAdpcmB].empty()) {
         c.adpcm_map.push_back({ 0, kAdpcmSpaceSize, c.adpcm_ram.data(), 1 });
     } else {
-        for (const auto& m : c.mappings[0])
+        for (const auto& m : c.mappings[kMemAdpcmB])
             c.adpcm_map.push_back({ m.base, m.size, m.data, (uint8_t)(m.ram ? 1 : 0) });
     }
     Y8960OPL_setADPCMMemoryMap(c.opl2ex, c.adpcm_map.data(), (uint32_t)c.adpcm_map.size());
@@ -324,7 +328,7 @@ static std::unique_ptr<ChipEntry> createChip(
     e->kind        = desc.kind;
     e->name        = desc.name;
     e->sample_rate = sample_rate;
-    e->clock       = (clock != 0) ? clock : desc.default_clock;
+    e->clock       = clock;
 
     switch (desc.kind) {
     case ChipKind::SSG:
@@ -377,8 +381,8 @@ static std::unique_ptr<ChipEntry> createChip(
         OPL_setChipType(e->opl, 0); // Y8950
         OPL_reset(e->opl);
         if (!e->opl->adpcm) return nullptr;
-        e->y8950_own[0] = e->opl->adpcm->memory[0];
-        e->y8950_own[1] = e->opl->adpcm->memory[1];
+        for (uint32_t space = 0; space < kMemorySlots; ++space)
+            e->y8950_own[space] = e->opl->adpcm->memory[space];
         break;
 
     case ChipKind::OPL:
@@ -514,8 +518,8 @@ static void calcStereoAligned(Chip* chip, void (*calcStereo)(Chip*, int32_t*), i
 static void mixOpllParts(const ChipEntry& c, const int32_t buf[2], float& out_l, float& out_r) {
     const float melody = (float)buf[0];
     const float rhythm = (float)buf[1];
-    const float (&m)[2] = c.part_gain[FM_PART_OPLL_MELODY];
-    const float (&r)[2] = c.part_gain[FM_PART_OPLL_RHYTHM];
+    const float (&m)[2] = c.part_gain[kPartMelody];
+    const float (&r)[2] = c.part_gain[kPartRhythm];
     out_l += (melody * m[0] + rhythm * r[0]) * kOutputScale * c.gain_l;
     out_r += (melody * m[1] + rhythm * r[1]) * kOutputScale * c.gain_r;
 }
@@ -604,7 +608,7 @@ FMENGINE_API const char* FMENGINE_CALL FmEngine_GetSupportedChip(
 FMENGINE_API FmResult FMENGINE_CALL FmEngine_AddChip(
     FmEngineHandle engine, const char* name, uint32_t clock, uint32_t* out_id)
 {
-    if (!engine || !name) return FM_ERR_INVALID_ARG;
+    if (!engine || !name || clock == 0) return FM_ERR_INVALID_ARG;
     const ChipDesc* desc = findChipDesc(name);
     if (!desc) return FM_ERR_UNKNOWN_CHIP;
 
@@ -668,63 +672,81 @@ FMENGINE_API FmResult FMENGINE_CALL FmEngine_GetGain(
     return FM_OK;
 }
 
-static bool hasPart(const ChipEntry& c, FmPart part) {
-    const uint32_t n = (uint32_t)part;
-    return n < kPartSlots && (partMask(c.kind) & (1u << n)) != 0;
+FMENGINE_API uint32_t FMENGINE_CALL FmEngine_GetPartCount(
+    FmEngineHandle engine, uint32_t chip_id)
+{
+    if (!engine || chip_id >= engine->chips.size()) return 0;
+    return partNames(engine->chips[chip_id]->kind).count;
+}
+
+FMENGINE_API const char* FMENGINE_CALL FmEngine_GetPartName(
+    FmEngineHandle engine, uint32_t chip_id, uint32_t index)
+{
+    if (!engine || chip_id >= engine->chips.size()) return nullptr;
+    const NameList parts = partNames(engine->chips[chip_id]->kind);
+    return index < parts.count ? parts.names[index] : nullptr;
 }
 
 FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetPartGain(
-    FmEngineHandle engine, uint32_t chip_id, FmPart part,
+    FmEngineHandle engine, uint32_t chip_id, const char* part,
     float gain_l, float gain_r)
 {
     if (!engine || chip_id >= engine->chips.size()) return FM_ERR_INVALID_ARG;
     auto& c = *engine->chips[chip_id];
-    if (!hasPart(c, part)) return FM_ERR_INVALID_ARG;
+    const int slot = findName(partNames(c.kind), part);
+    if (slot < 0) return FM_ERR_INVALID_ARG;
     std::lock_guard<std::mutex> lock(engine->write_mutex);
-    c.part_gain[part][0] = gain_l;
-    c.part_gain[part][1] = gain_r;
+    c.part_gain[slot][0] = gain_l;
+    c.part_gain[slot][1] = gain_r;
     return FM_OK;
 }
 
 FMENGINE_API FmResult FMENGINE_CALL FmEngine_GetPartGain(
-    FmEngineHandle engine, uint32_t chip_id, FmPart part,
+    FmEngineHandle engine, uint32_t chip_id, const char* part,
     float* out_gain_l, float* out_gain_r)
 {
     if (!engine || chip_id >= engine->chips.size()) return FM_ERR_INVALID_ARG;
     if (!out_gain_l || !out_gain_r) return FM_ERR_INVALID_ARG;
     auto& c = *engine->chips[chip_id];
-    if (!hasPart(c, part)) return FM_ERR_INVALID_ARG;
+    const int slot = findName(partNames(c.kind), part);
+    if (slot < 0) return FM_ERR_INVALID_ARG;
     std::lock_guard<std::mutex> lock(engine->write_mutex);
-    *out_gain_l = c.part_gain[part][0];
-    *out_gain_r = c.part_gain[part][1];
+    *out_gain_l = c.part_gain[slot][0];
+    *out_gain_r = c.part_gain[slot][1];
     return FM_OK;
 }
 
-FMENGINE_API FmResult FMENGINE_CALL FmEngine_GetPartMask(
-    FmEngineHandle engine, uint32_t chip_id, uint32_t* out_mask)
+FMENGINE_API uint32_t FMENGINE_CALL FmEngine_GetMemoryCount(
+    FmEngineHandle engine, uint32_t chip_id)
 {
-    if (!engine || chip_id >= engine->chips.size()) return FM_ERR_INVALID_ARG;
-    if (!out_mask) return FM_ERR_INVALID_ARG;
-    *out_mask = partMask(engine->chips[chip_id]->kind);
-    return FM_OK;
+    if (!engine || chip_id >= engine->chips.size()) return 0;
+    return memoryNames(engine->chips[chip_id]->kind).count;
+}
+
+FMENGINE_API const char* FMENGINE_CALL FmEngine_GetMemoryName(
+    FmEngineHandle engine, uint32_t chip_id, uint32_t index)
+{
+    if (!engine || chip_id >= engine->chips.size()) return nullptr;
+    const NameList memories = memoryNames(engine->chips[chip_id]->kind);
+    return index < memories.count ? memories.names[index] : nullptr;
 }
 
 FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemory(
     FmEngineHandle engine, uint32_t chip_id,
-    FmMemoryType mem_type, const uint8_t* data, uint32_t size)
+    const char* memory, const uint8_t* data, uint32_t size)
 {
     if (!engine || chip_id >= engine->chips.size()) return FM_ERR_INVALID_ARG;
     if (!data && size != 0) return FM_ERR_INVALID_ARG;
     auto& c = *engine->chips[chip_id];
+    const int space = findName(memoryNames(c.kind), memory);
+    if (space < 0) return FM_ERR_INVALID_ARG;
 
-    // Y8950 / OPL2EX の ADPCM-B RAM の先頭へ複製する。SetMemoryEx の割り当てがある間は
+    // チップ自身が持つ 256KB の先頭へ複製する。SetMemoryEx の割り当てがある間は
     // コアから見えないが、割り当てが全部外れると見えるようになる
     uint8_t* dest = nullptr;
-    if (mem_type == FM_MEM_ADPCM_B) {
-        if (c.kind == ChipKind::Y8950)  dest = c.y8950_own[0];
-        if (c.kind == ChipKind::OPL2EX) dest = c.adpcm_ram.data();
-    }
-    // 他のチップは外部メモリ不要
+    if (c.kind == ChipKind::Y8950)  dest = c.y8950_own[space];
+    if (c.kind == ChipKind::OPL2EX) dest = c.adpcm_ram.data();
+    // memoryNames に足したチップの書き込み先をここに足し忘れても、黙って FM_OK にしない
     if (!dest) return FM_ERR_UNAVAILABLE;
     if (size) std::memcpy(dest, data, std::min(size, kAdpcmSpaceSize));
     return FM_OK;
@@ -732,13 +754,13 @@ FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemory(
 
 FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemoryEx(
     FmEngineHandle engine, uint32_t chip_id,
-    FmMemoryType mem_type, uint32_t base,
+    const char* memory, uint32_t base,
     uint8_t* data, uint32_t size, FmMemoryAccess access)
 {
     if (!engine || chip_id >= engine->chips.size()) return FM_ERR_INVALID_ARG;
     if (size == 0) return FM_ERR_INVALID_ARG;
     auto& c = *engine->chips[chip_id];
-    const int space = memorySpace(c.kind, mem_type);
+    const int space = findName(memoryNames(c.kind), memory);
     if (space < 0) return FM_ERR_INVALID_ARG;
 
     const uint64_t lo = base;
@@ -764,13 +786,6 @@ FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemoryEx(
     if (c.kind == ChipKind::OPL2EX) applyOpl2exMemory(c);
     if (c.kind == ChipKind::Y8950)  applyY8950Memory(c, space);
     return FM_OK;
-}
-
-FMENGINE_API uint32_t FMENGINE_CALL FmEngine_GetMemorySize(
-    FmEngineHandle engine, uint32_t chip_id, FmMemoryType /*mem_type*/)
-{
-    if (!engine || chip_id >= engine->chips.size()) return 0;
-    return 0; // 本実装では動的追跡なし
 }
 
 FMENGINE_API FmResult FMENGINE_CALL FmEngine_Generate(

@@ -28,24 +28,27 @@ emu8950 / emu2413 / emu2149 を改造したコアで提供します。
 
 ## 対応チップ一覧
 
-| チップ名 | 実チップ | デフォルトクロック | ネイティブレート |
-|---|---|---|---|
-| `SSG`   | YM2149 / AY-3-8910       | 2.000 MHz | 250,000 Hz |
-| `OPLL`  | YM2413 (2413 ROM patch)  | 3.580 MHz |  49,715 Hz |
-| `OPLLP` | YM2413 (281B patch)      | 3.580 MHz |  49,715 Hz |
-| `OPLLX` | YM2413 (2413 ROM patch)  | 3.580 MHz |  49,715 Hz |
-| `VRC7`  | VRC7                     | 3.580 MHz |  49,715 Hz |
-| `Y8950` | Y8950 (ADPCM 対応)       | 3.580 MHz |  49,715 Hz |
-| `OPL`   | YM3526                   | 3.580 MHz |  49,715 Hz |
-| `OPL2`  | YM3812                   | 3.580 MHz |  49,715 Hz |
-| `SCC`   | Konami SCC               | 3.580 MHz | 1,789,772 Hz |
-| `SCCP`  | Konami SCC-I (SCC+)      | 3.580 MHz | 1,789,772 Hz |
-| `DCSG`  | SN76489                  | 3.580 MHz | 223,721 Hz |
-| `OPL2EX` | Y8960 拡張 OPL2 部 (YM3812 + ADPCM-B) | 3.580 MHz | 49,715 Hz |
-| `OPLLEX` | Y8960 拡張 OPLL 部 (YM2413 + 音色バンク) | 3.580 MHz | 49,715 Hz |
-| `SSGS`   | Y8960 SSGS (YMZ705 の SSG 部相当) | 3.580 MHz | 223,721 Hz |
+| チップ名 | 実チップ | ネイティブレート |
+|---|---|---|
+| `SSG`   | YM2149 / AY-3-8910       | clock / 8 (2.000 MHz で 250,000 Hz) |
+| `OPLL`  | YM2413 (2413 ROM patch)  | clock / 72 (3.579545 MHz で 49,715 Hz) |
+| `OPLLP` | YM2413 (281B patch)      | clock / 72 |
+| `OPLLX` | YM2413 (2413 ROM patch)  | clock / 72 |
+| `VRC7`  | VRC7                     | clock / 72 |
+| `Y8950` | Y8950 (ADPCM 対応)       | clock / 72 |
+| `OPL`   | YM3526                   | clock / 72 |
+| `OPL2`  | YM3812                   | clock / 72 |
+| `SCC`   | Konami SCC               | clock / 2 (3.579545 MHz で 1,789,772 Hz) |
+| `SCCP`  | Konami SCC-I (SCC+)      | clock / 2 |
+| `DCSG`  | SN76489                  | clock / 16 (3.579545 MHz で 223,721 Hz) |
+| `OPL2EX` | Y8960 拡張 OPL2 部 (YM3812 + ADPCM-B) | clock / 72 |
+| `OPLLEX` | Y8960 拡張 OPLL 部 (YM2413 + 音色バンク) | clock / 72 |
+| `SSGS`   | Y8960 SSGS (YMZ705 の SSG 部相当) | SSG の動作クロック / 8 (3.579545 MHz で 223,721 Hz) |
 
 `FmEngine_GetSupportedChip` はこの表の順にチップ名を返します。
+
+クロックは `FmEngine_AddChip` の `clock` 引数で必ず指定します。エンジンは既定の
+クロックを持たず、0 を渡すと `FM_ERR_INVALID_ARG` を返します。
 
 ## ファイル構成
 
@@ -124,29 +127,44 @@ cd <FMEngineTest_dir>
 
 ## 部位ごとのゲイン
 
-FmEngineApi の任意エクスポート `FmEngine_SetPartGain` / `FmEngine_GetPartGain` /
-`FmEngine_GetPartMask` に対応しています。
+FmEngineApi の任意エクスポート `FmEngine_GetPartCount` / `FmEngine_GetPartName` /
+`FmEngine_SetPartGain` / `FmEngine_GetPartGain` に対応しています。部位は名前で指定します。
 
-| チップ | 部位 |
+| チップ | 部位の名前 |
 |---|---|
-| `OPLL` / `OPLLP` / `OPLLX` / `VRC7` | `FM_PART_OPLL_MELODY` (メロディ)、`FM_PART_OPLL_RHYTHM` (リズム) |
-| 上記以外 (`OPLLEX` を含む) | なし (`FmEngine_GetPartMask` は 0) |
+| `OPLL` / `OPLLP` / `OPLLX` / `VRC7` | `MELODY` (メロディ)、`RHYTHM` (リズム) |
+| 上記以外 (`OPLLEX` を含む) | なし (`FmEngine_GetPartCount` は 0) |
 
 部位のゲインの既定値は 1.0 です。実際に掛かるゲインは `FmEngine_SetGain` のゲインと
 部位のゲインの積です。
 
+## 外部メモリ
+
+FmEngineApi の任意エクスポート `FmEngine_GetMemoryCount` / `FmEngine_GetMemoryName` /
+`FmEngine_SetMemory` に対応しています。外部メモリは名前で指定します。
+
+| チップ | 外部メモリの名前 | 内容 |
+|---|---|---|
+| `Y8950` | `ADPCM_B` | ADPCM の RAM モードのメモリ (256KB) |
+| `Y8950` | `ADPCM_B_ROMMODE` | ADPCM の ROM モードのメモリ (256KB) |
+| `OPL2EX` | `ADPCM_B` | ADPCM のサンプル RAM (256KB) |
+| 上記以外 | なし (`FmEngine_GetMemoryCount` は 0) | |
+
+`FmEngine_SetMemory` は、チップが自分で持つそのメモリの先頭へデータを複製します。
+256KB を超える部分は捨てられます。チップが持たない名前を渡すと `FM_ERR_INVALID_ARG` です。
+
 ## 外部メモリの割り当て
 
-`FmEngine_SetMemory` に加えて、FmEngineApi の任意エクスポート `FmEngine_SetMemoryEx` に
-対応しています。呼び出し側のメモリブロックをチップのメモリの `[base, base + size)` に
+FmEngineApi の任意エクスポート `FmEngine_SetMemoryEx` に対応しています。
+呼び出し側のメモリブロックをチップのメモリの `[base, base + size)` に
 割り当てます。`FM_ACCESS_RAM` で割り当てたブロックはエンジンが複製せずにその場で
 読み書きするので、複数のチップや他のデバイスと共有できます。
 
-| チップ | `mem_type` | 割り当てられるもの |
+| チップ | 外部メモリの名前 | 割り当てられるもの |
 |---|---|---|
-| `OPL2EX` | `FM_MEM_ADPCM_B` | ROM / RAM とも、任意の `base` と `size` |
-| `Y8950` | `FM_MEM_ADPCM_B` (RAM モードのメモリ) | ROM は任意の `base` と `size`。RAM は `base` が 0 で `size` が 256KB 以上のものだけ |
-| `Y8950` | `FM_MEM_ADPCM_B_ROMMODE` (ROM モードのメモリ) | 同上 |
+| `OPL2EX` | `ADPCM_B` | ROM / RAM とも、任意の `base` と `size` |
+| `Y8950` | `ADPCM_B` | ROM は任意の `base` と `size`。RAM は `base` が 0 で `size` が 256KB 以上のものだけ |
+| `Y8950` | `ADPCM_B_ROMMODE` | 同上 |
 
 - 上の表以外の組み合わせは `FM_ERR_INVALID_ARG` です。`Y8950` に表の条件を満たさない
   RAM を割り当てると `FM_ERR_UNAVAILABLE` です
@@ -168,9 +186,10 @@ FmEngineApi の任意エクスポート `FmEngine_SetPartGain` / `FmEngine_GetPa
 シリアルバイトを直接記述してください。
 
 ### Y8950 (ADPCM)
-ADPCM データは `FmEngine_SetMemory(chip_id, FM_MEM_ADPCM_B, data, size)` で
-RAM の先頭から書き込みます。ROM モードのメモリや共有する RAM は
-`FmEngine_SetMemoryEx` で割り当てます ([外部メモリの割り当て](#外部メモリの割り当て))。
+ADPCM データは `FmEngine_SetMemory` で書き込みます。メモリの名前に `ADPCM_B` を
+指定すると RAM モードのメモリ、`ADPCM_B_ROMMODE` を指定すると ROM モードのメモリの
+先頭から入ります ([外部メモリ](#外部メモリ))。共有する RAM は `FmEngine_SetMemoryEx` で
+割り当てます ([外部メモリの割り当て](#外部メモリの割り当て))。
 
 ### SCC / SCCP
 `reg` は Z80 メモリ空間上のレジスタ窓オフセットです。窓の先頭アドレス
@@ -224,7 +243,7 @@ YM3812 に Y8950 の ADPCM-B を足したもので、レジスタ配置は Y8950
 
 - ADPCM のサンプルメモリは RAM 256KB だけで、ROM はありません。`0x08` の bit0 を
   立てても RAM から再生します
-- サンプルデータは `FmEngine_SetMemory(chip_id, FM_MEM_ADPCM_B, data, size)` で
+- サンプルデータは `FmEngine_SetMemory` にメモリの名前 `ADPCM_B` を指定して、
   RAM の先頭から書き込みます。256KB を超える部分は捨てられます。
   `0x07` の REC と MEMORY DATA を立てて `0x0F` に書き込む方法でも書けます
 - `0x07` の bit3 (SP-OFF) を立てると ADPCM は無音になります
@@ -281,7 +300,7 @@ YM2149 相当の SSG を 2 系統持ち、6 チャンネルそれぞれにパン
 - パンポットが中央のとき、SSG-1 / SSG-2 はそれぞれ、SSG の動作クロックを同じにした
   `SSG` チップと同じ音を出します
 - `clock` はマスタークロックです。SSG はその 1/2 (5.12MHz 以上なら 1/3) で動きます。
-  既定の 3.579545MHz では SSG は 1.789772MHz で動き、ネイティブレートはその 1/8 です
+  3.579545MHz を渡すと SSG は 1.789772MHz で動き、ネイティブレートはその 1/8 です
 - パンポットは 0 が左端、8 が中央、15 が右端です。片側は全開のまま、反対側のレベル
   だけが線形に絞られます。0 と 1 はどちらも左端です
 

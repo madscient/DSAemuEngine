@@ -20,30 +20,41 @@ AI がセッションをまたいで作業を引き継ぐための文書。利�
 
 - Y8960 の拡張 OPL2 部 `OPL2EX` と拡張 OPLL 部 `OPLLEX`（§3.1、§3.2）
 - Y8960 の `SSGS`（§3.6）
-- FmEngineApi の外部メモリの割り当て `FmEngine_SetMemoryEx`（任意エクスポート）。
-  `OPL2EX` は仕様どおり、`Y8950` は制限付き（§3.7）
-- FmEngineApi の部位ゲイン（任意エクスポート 3 関数）。部位を持つのは
-  `OPLL` / `OPLLP` / `OPLLX` / `VRC7`（§3.3）
+- FmEngineApi の外部メモリ（任意エクスポート。列挙の 2 関数と `FmEngine_SetMemory`、
+  `FmEngine_SetMemoryEx`）。名前で指定する。`Y8950` は `ADPCM_B` / `ADPCM_B_ROMMODE`、
+  `OPL2EX` は `ADPCM_B`。`FmEngine_SetMemoryEx` は `OPL2EX` が仕様どおり、`Y8950` は
+  制限付き（§3.7）
+- FmEngineApi の部位ゲイン（任意エクスポート 4 関数）。名前で指定する。部位を持つのは
+  `OPLL` / `OPLLP` / `OPLLX` / `VRC7`（`MELODY` / `RHYTHM`。§3.3）
+- `FmEngine_AddChip` は `clock` = 0 を受け付けない。既定のクロックは持たない（§3.8）
 - emu2413 / emu8950 のステレオ出力のレート変換の位相ずれを、エンジン側で揃えた（§3.4）。
   **既存チップの出力がネイティブレート以外で変わる**
-- `tests/api_test.cpp`（78 項目）と CTest への登録
+- `tests/api_test.cpp`（91 項目）と CTest への登録
+
+**仕様への追随**: FMEngineTest `20c4923` まで（§2）。`src/FmEngineApi.h` は同じコミットの
+`include/FmEngineApi.h` の写しで、エンジン側に仮の宣言は残っていない。
+
+**番号で指定する形の呼び出し側と組み合わせない。** `20c4923` より前のヘッダでビルドした
+呼び出し側が、この DLL の `FmEngine_SetMemory` / `FmEngine_SetMemoryEx` /
+`FmEngine_SetPartGain` / `FmEngine_GetPartGain` を呼ぶと、DLL は番号をポインタとして読む
+（仕様の前提。FMEngineTest の `docs/CHANGELOG.md`「外部メモリを名前で指定する」。
+そこに挙がっている呼び出し側は FitomEmuIF と Y8960Sequencer）。
 
 **ユーザーに判断を仰いでいること**（§6）
 
-- `OPLLEX` に部位を持たせるか（今は持たせていない）
+- `OPLLEX` に部位を持たせるか（今は持たせていない）。仕様書を変えずに持たせられるように
+  なった（§6.1）
+- 仕様書の表に `OPL2EX` の外部メモリを足すか（§6.7。FMEngineTest 側の作業）
 - OPL2EX の波形選択の細部を emu8950 と openMSX 系フォークのどちらに揃えるか（今は emu8950）
 - SSGS のパンポットの分配則は暫定（§6.5）。ハードウェアの仕様が決まったら見直す
 - ADPCM の再生が止まったあとの直流を、本リポジトリ側で止めるか（§6.6。今は止めていない）
 
-**写し元のヘッダ待ち**: `FmEngine_SetMemoryEx` の型と関数は YMEngine の `FmEngineApi.h` に
-まだ無いので、`src/DSAemuEngine.cpp` と `tests/api_test.cpp` に宣言してある（§3.7）。
-YMEngine が追随したらヘッダを写し直し、この宣言を消す（消さないとコンパイルエラーになる）。
-
 **上流へ報告した不具合**（§9）: 2026-10-03 に issue を 6 件出した（emu2413#20、emu8950#5〜#9）。
 上流の反応待ち。直ったら submodule を上げ、§9.1 の末尾の手順で回避策を見直す。
 
-**次の一手**: 上の判断待ち。FMEngineTest の `docs/CHANGELOG.md` は DSAemuEngine に
-部位ゲインが無いと記録している（`0f5c786` 時点）。あちらを直すかは FMEngineTest 側の作業。
+**次の一手**: 上の判断待ち。FMEngineTest の `docs/CHANGELOG.md` は「エンジンと
+アプリケーション側の対応（まだ）」に DSAemuEngine を挙げている（`20c4923` 時点）。
+あちらを直すかは FMEngineTest 側の作業。
 
 ## 1. 目的とスコープ
 
@@ -51,6 +62,9 @@ YMEngine が追随したらヘッダを写し直し、この宣言を消す（�
   FmEngineApi のチップとして提供する（2026-10-02 のユーザー依頼）
 - FMEngineTest の `docs/FmEngineApi.md` の改訂（`e39b206`、部位ゲイン）に追随する
 - Y8960 の SSGS を、emu2149 を土台に提供する（2026-10-02 の 2 つ目のユーザー依頼）
+- FMEngineTest の `docs/FmEngineApi.md` の改訂（`c0589c1`・`866f4a3`・`20c4923`。`SetMemory` の
+  `data` に書き込まない、`clock` = 0 の廃止、部位と外部メモリを名前で指定）に追随する
+  （2026-10-03 のユーザー依頼）
 
 **スコープ外**: Y8960 の DCSG / SCC / MSX-TIMER / ミキサー、I/O イネーブラと
 メモリマップド I/O の窓。チップの外の配線はアプリケーションの領分である。
@@ -63,9 +77,15 @@ YMEngine が追随したらヘッダを写し直し、この宣言を消す（�
 | madscient/openMSX_Y8960 | `main` `b5850635c` | `doc/fork/y8960/implementation-plan.md` §3.4・§3.4.1・§3.4.3・§3.6、`src/sound/Y8960OPL2.cc`・`Y8960Adpcm.cc`（最終変更 `7aa2a9684`）、`src/sound/Y8960SSGS.cc` | OPL2EX と SSGS の仕様判断の情報リソース。コードは取り込んでいない |
 | madscient/MsxSoundSuiteExtension | `463f7c6` | `docs/y8960/hardware.md` | Y8960 を駆動するファームウェアが前提にしている仕様（クロック、OPLL-EX / OPL2-EX / SSGS のレジスタ） |
 | madscient/EPSGemuEngine | `63c8834` | `README.md` の SSGS / 実装上の注意の節、`src/YmzSsg.{h,cpp}` | YMZ705 / YMZ732 の SSG 部の FmEngineApi 実装。パンの分配則、`clock` の意味、チップ名 `SSGS` を揃えた。コードは取り込んでいない（土台が MAME 系の ay8910 で、こちらは emu2149） |
-| madscient/Y8960emu | `b695a31` | `README.md`、`doc/Y8960emu_Architecture.md`、`src/FmChip.h` | 同じ Y8960 を FmEngineApi で出す ymfm ベースのエンジン。チップ名と「1 回路 = 1 チップ」のモデルを揃えた |
-| madscient/FMEngineTest | `e002890` | `docs/FmEngineApi.md`、`docs/CHANGELOG.md` | FmEngineApi の仕様の正。部位ゲインは `e39b206`、外部メモリの割り当ては `e002890` で読んだ |
-| madscient/YMEngine | `8f81213` | `src/FmEngineApi.h` | 参照ヘッダ。`src/FmEngineApi.h` はこの写し（一字も変えていない） |
+| madscient/EPSGemuEngine | `7cd1e8a` | `README.md` の対応チップ一覧、`src/EPSGemuEngine.cpp` の `FmEngine_AddChip` | `clock` = 0 の廃止の先行例。判定の順と README の書き方を揃えた（§3.8） |
+| madscient/Y8960emu | `b695a31` | `README.md`、`doc/Y8960emu_Architecture.md`、`src/FmChip.h` | 同じ Y8960 を FmEngineApi で出す ymfm ベースのエンジン。チップ名と「1 回路 = 1 チップ」のモデルを揃えた。`da2ab34` 時点で、名前での指定には追随していない（**確認済み(読解)**: `git grep` で `FmEngine_GetMemoryCount` が無い） |
+| madscient/FMEngineTest | `20c4923` | `docs/FmEngineApi.md`、`docs/CHANGELOG.md`、`include/FmEngineApi.h` | FmEngineApi の仕様とヘッダの正。`src/FmEngineApi.h` は `include/FmEngineApi.h` の写し。部位ゲインは `e39b206`、外部メモリの割り当ては `e002890`、名前での指定と `clock` = 0 の廃止は `20c4923` で読んだ |
+| madscient/YMEngine | `8f81213`、`7d8ed2d` | `src/FmEngineApi.h`、`src/FmEngineApi.cpp` の `FmEngine_AddChip` | 2026-10-03 までの `src/FmEngineApi.h` の写し元（`8f81213`）。部位ゲインの引数の扱い（§3.3）と `clock` = 0 の判定の順（`7d8ed2d`。§3.8）を揃えた先 |
+
+**ヘッダの写しの確かめ方**（**確認済み**: 2026-10-03 に走らせて一致した）: 本リポジトリで
+`git hash-object src/FmEngineApi.h`、FMEngineTest で `git rev-parse 20c4923:include/FmEngineApi.h` を
+取ると、どちらも `206f723b` で始まる同じ ID になる。作業ツリーの改行が CRLF でも、
+`core.autocrlf` が有効なら `hash-object` は LF に直して数える。
 
 ### 2.1 持ち込んではいけないもの
 
@@ -131,7 +151,7 @@ submodule の作業ツリーは記録コミット `c27078c` と `CMakeLists.txt`
 **変えていないもの**（emu8950 のまま）: 波形選択の効き方（後述）、`07h` の b3（SP-OFF）で
 ADPCM が無音になること、64K モード、`15h`-`17h`（受けて何もしない）、ステータス。
 
-**エンジン側**: チップ 1 個ごとに 256KB の `std::vector` を持ち、`FmEngine_SetMemory(FM_MEM_ADPCM_B)`
+**エンジン側**: チップ 1 個ごとに 256KB の `std::vector` を持ち、`FmEngine_SetMemory` の `ADPCM_B`
 はそこへ先頭から複製する（256KB を超える分は捨てる）。`FmEngine_SetMemoryEx` の割り当てが
 無い間は、この 256KB を 0 番地から 1 つの割り当てとしてコアに渡す（§3.7）。
 
@@ -154,16 +174,22 @@ ADPCM が無音になること、64K モード、`15h`-`17h`（受けて何も�
 
 ### 3.3 部位ゲイン
 
-- `FmEngine_SetPartGain` / `FmEngine_GetPartGain` / `FmEngine_GetPartMask` を
-  エクスポートする（仕様上は任意）
-- 部位を持つのは `OPLL` / `OPLLP` / `OPLLX` / `VRC7`（`FM_PART_OPLL_MELODY` /
-  `FM_PART_OPLL_RHYTHM`）。他は 0。仕様書の表どおり
+- `FmEngine_GetPartCount` / `FmEngine_GetPartName` / `FmEngine_SetPartGain` /
+  `FmEngine_GetPartGain` をエクスポートする（仕様上は任意で、4 つで組）。部位は名前の
+  文字列で指定する（FMEngineTest `20c4923`。それまでは番号 `FmPart` と `FmEngine_GetPartMask`）
+- 部位を持つのは `OPLL` / `OPLLP` / `OPLLX` / `VRC7`（`MELODY` / `RHYTHM`）。他は 0 個。
+  仕様書の表どおり
+- 名前の表（`kOpllParts`）の添字が `FmEngine_GetPartName` の `index` で、そのまま
+  `ChipEntry::part_gain` の添字になる。並びは `MELODY`、`RHYTHM`（仕様は並びを定めない。
+  試験は並びに依らない）
+- 名前は `strcmp` で全体を比べる（大文字小文字を区別する）
 - 2 系統の取り出し方: emu2413 のパン（拡張機能）で ch0-8 を L だけ、BD/HH/SD/TOM/CYM を
   R だけに出させ、`calcStereo` の L と R をそれぞれメロディとリズムとして受け取る。
   エンジンが部位ゲインを掛けて L/R に混ぜ直す。`OPLL_reset()` はパンを中央に戻すので、
   リセットの後に掛け直す必要がある
-- 引数の扱いは YMEngine に合わせた: 持たない部位・範囲外の部位・未知の `chip_id`・
-  `GetPartGain` の出力ポインタが null のときは `FM_ERR_INVALID_ARG`
+- 引数の扱い: チップが持たない部位の名前・名前が null・未知の `chip_id` は
+  `FM_ERR_INVALID_ARG`（仕様）。`GetPartGain` の出力ポインタが null のときも
+  `FM_ERR_INVALID_ARG`（仕様は定めていない。YMEngine `8f81213` に合わせたまま）
 - `Set/GetPartGain` は `write_mutex` を取る（`Generate` と並行して呼べるという仕様のため）
 
 ### 3.4 レート変換の位相合わせ
@@ -198,14 +224,18 @@ ADPCM が無音になること、64K モード、`15h`-`17h`（受けて何も�
 |---|---|---|---|
 | チップ名 | `OPL2EX` / `OPLLEX` | 依頼文と Y8960emu が同じ名前を使っている | `kChipTable`、README、試験、利用側のパッチ |
 | 対応チップの並び | 既存 11 個の後ろに追加 | 既存の index を保存している利用者がいても壊さない | 並べ替えは index の互換を壊す |
-| 既定のクロック | 両方 3579545Hz | MSSX `hardware.md`「OPLL-EX / OPL2-EX は 3.579545MHz」 | 定数 1 つ |
+| クロック | 既定値を持たない。`clock` = 0 は `FM_ERR_INVALID_ARG` | 仕様（FMEngineTest `866f4a3`、ユーザー決定）。§3.8 | `FmEngine_AddChip` の 1 行、README、試験の `kClock` |
 | `reg` / `port` | `reg` はレジスタ番号、`port` は無視（他のチップと同じ） | Y8960emu も `port=0` では同じ（**確認済み(読解)**: `src/FmChip.h` の `write`）。`port≠0` の Y8960emu の扱いは**未確認** | 定義を変えると README と利用側 |
-| OPLLEX の部位 | 無し | 仕様書の部位の表に OPLLEX が無い | §6.1 |
+| 部位の名前 | OPLL 系に `MELODY` / `RHYTHM` | 仕様書の表（FMEngineTest `20c4923`、ユーザー決定） | `kOpllParts`、README、試験 |
+| OPLLEX の部位 | 無し | Y8960 の中でメロディとリズムが別々の出力になるのか分からない（§6.1） | §6.1 |
 | SSGS のチップ名 | `SSGS` | 2026-10-02 ユーザー決定。Y8960 の両フォークと MSSX、EPSGemuEngine（YMZ705）と同じ名前 | `kChipTable`、README、試験、利用側のパッチ |
-| SSGS の `clock` | マスタークロック。SSG は 5.12MHz 未満なら 1/2、以上なら 1/3。既定 3579545 | 2026-10-02 ユーザー決定。EPSGemuEngine の `SSGS` と同じ意味 | `ssgsUnitClock()` と既定値、README、試験 |
+| SSGS の `clock` | マスタークロック。SSG は 5.12MHz 未満なら 1/2、以上なら 1/3 | 2026-10-02 ユーザー決定。EPSGemuEngine の `SSGS` と同じ意味 | `ssgsUnitClock()`、README、試験 |
 | SSGS のリセット直後のパン | 全チャンネル 8（中央） | blueMSX-plus_Y8960 での 2026-09-12 のユーザー判断（§3.6）。openMSX_Y8960 も中央 | フォークの `reset_pan()`、README、試験 |
+| 外部メモリの名前 | `Y8950` に `ADPCM_B` / `ADPCM_B_ROMMODE`、`OPL2EX` に `ADPCM_B` | `Y8950` は仕様書の表（`20c4923`）。`OPL2EX` は表に無く、エンジンが決める値。実装の前には聞かず、実装後の報告（この値を先頭に挙げた）をユーザーが了承した（2026-10-03）。「OPL2EX のメモリは Y8950 / YM2608 と同じ ADPCM-B で、新しい種類は要らない」（2026-10-02 ユーザー回答）と、仕様の名前の付け方（定数名から `FM_MEM_` を取る。FMEngineTest の CHANGELOG）から `ADPCM_B` にした。Y8960emu が OPL2EX に別の名前を付けないことが前提（`da2ab34` 時点で未追随。§6.7） | `memoryNames()` の 1 行、README の 3 か所、試験の文字列。利用側が名前を設定ファイルに書き始めた後は、そこにも及ぶ |
 | OPL2EX のサンプル RAM | `SetMemory` はチップごとの 256KB へ複製。共有は `SetMemoryEx` の RAM で行う | FmEngineApi の外部メモリの割り当て（FMEngineTest `e002890`）。Y8960emu は `SetMemory` が参照なので結果として共有できる（§6.2） | §3.7 |
-| `SetMemoryEx` の対象 | `OPL2EX` の `FM_MEM_ADPCM_B`。`Y8950` の `FM_MEM_ADPCM_B` と `FM_MEM_ADPCM_B_ROMMODE`。他は `FM_ERR_INVALID_ARG` | 仕様書の表。OPL2EX のメモリは Y8950 / YM2608 と同じ ADPCM-B で、新しい種類は要らない。共有も OPL2EX 特有ではなく、外部回路しだいで Y8950 / YM2608 でも作れる（2026-10-02 ユーザー回答） | `memorySpace()` と README、試験 |
+| `SetMemory` の `ADPCM_B_ROMMODE` | `Y8950` の ROM モードのメモリ（emu8950 自身の配列）の先頭へ複製する | 仕様「`FmEngine_GetMemoryName` が返す名前は、どれも `FmEngine_SetMemory` に渡せる」（`20c4923`）。`SetMemoryEx` で使えているメモリなので列挙から外せず、`ADPCM_B` と同じ扱いにした。実装の前には聞かず、実装後の報告（この値を先頭に挙げた）をユーザーが了承した（2026-10-03） | `FmEngine_SetMemory` の書き込み先の 1 行、README の 2 か所、試験 2 項目 |
+| 持たないメモリへの `SetMemory` | `FM_ERR_INVALID_ARG`（`20c4923` より前は `FM_ERR_UNAVAILABLE`） | 仕様 | — |
+| `SetMemoryEx` の対象 | `OPL2EX` の `ADPCM_B`。`Y8950` の `ADPCM_B` と `ADPCM_B_ROMMODE`。他は `FM_ERR_INVALID_ARG` | 仕様書の表。OPL2EX のメモリは Y8950 / YM2608 と同じ ADPCM-B で、新しい種類は要らない。共有も OPL2EX 特有ではなく、外部回路しだいで Y8950 / YM2608 でも作れる（2026-10-02 ユーザー回答） | `memoryNames()` と README、試験 |
 | `Y8950` の `SetMemoryEx` の制限 | RAM は `base` 0・256KB 以上だけ（他は `FM_ERR_UNAVAILABLE`）。ROM への書き込みを捨てられない | 2026-10-02 ユーザー決定（素の emu8950 のまま制限付き）。§3.7 | §3.7 の「見送った案」 |
 | `SetMemory` と `SetMemoryEx` の関係 | `SetMemoryEx` の割り当てが 1 つでもある間、そのメモリは割り当てだけで決まり、`SetMemory` の内容は見えない。全部外すと見える | 仕様は混ぜたときを定めていない。本リポジトリで決めた（ユーザーとは決めていない） | `applyOpl2exMemory()` / `applyY8950Memory()`、README、試験 |
 
@@ -247,7 +277,8 @@ EPSGemuEngine と openMSX_Y8960 が行う「パンを掛ける前に無音時レ
 - 2 個のコアを持つ。`reg < 0x40` のとき `reg >> 5` で系統を選び、`reg & 0x1F` を渡す。
   `40h` 以降は YMZ705 では ADPCM 部で、Y8960 の SSGS は持たないので捨てる
 - `clock` はマスタークロックで、`ssgsUnitClock()` が SSG のクロックに直す（§3.5）
-- 出力は 2 系統の `calcStereo` の和。部位は持たない（仕様書の部位の表に無い）
+- 出力は 2 系統の `calcStereo` の和。部位は持たない（2 系統は足し合わせて 1 つの
+  ステレオ出力にしている）
 - 内蔵のレート変換を使う（`Y8960SSG_setQuality(unit, 1)`。`SSG` チップと同じ）
 
 **先行実装との違い**（**確認済み(読解)**）:
@@ -262,13 +293,20 @@ EPSGemuEngine と openMSX_Y8960 が行う「パンを掛ける前に無音時レ
 
 ### 3.7 外部メモリの割り当て（FmEngine_SetMemoryEx）
 
-FMEngineTest `e002890` の `docs/FmEngineApi.md`「外部メモリの割り当て (任意)」を実装した。
-仕様書が参照実装より先に書かれており、YMEngine を含めてまだどのエンジンも実装していない
-（同 `docs/CHANGELOG.md`。**確認済み(読解)**）。
+FMEngineTest の `docs/FmEngineApi.md`「外部メモリ (任意)」「外部メモリの割り当て (任意)」を
+実装した。割り当ては `e002890`、名前での指定は `20c4923`。
 
-**宣言の置き場所**: 型（`FM_MEM_ADPCM_B_ROMMODE`、`FmMemoryAccess`）と関数は、写し元の
-YMEngine の `FmEngineApi.h`（`8f81213`）にまだ無い。CLAUDE.md の規則に従いヘッダは写しの
-まま保ち、`src/DSAemuEngine.cpp` と `tests/api_test.cpp` に仕様どおりの名前で宣言した。
+**名前**: 外部メモリは名前の文字列で指定し、`FmEngine_GetMemoryCount` /
+`FmEngine_GetMemoryName` で列挙する（`20c4923`。それまでは番号 `FmMemoryType` と
+`FmEngine_GetMemorySize`）。名前の表（`kAdpcmMemories`）の添字が `index` で、そのまま
+`ChipEntry::mappings` と emu8950 の `memory[]` の添字になる（0 が `ADPCM_B`、1 が
+`ADPCM_B_ROMMODE`）。`OPL2EX` は表の先頭の 1 個だけを持つ。名前は `strcmp` で全体を比べる。
+
+**`FmEngine_SetMemory`**: チップ自身が持つ 256KB の先頭へ複製する（256KB を超える分は
+捨てる）。`data` には書き込まない（仕様 `c0589c1`。**確認済み(読解)**: `memcpy` の読み側に
+しか使っていない）。`data` が null で `size` が 0 でなければ `FM_ERR_INVALID_ARG`、`size` が
+0 なら何もせず `FM_OK`（仕様は定めていない）。`Y8950` の `ADPCM_B_ROMMODE` は ROM モードの
+メモリへ入る（§3.5）。
 
 **OPL2EX**（仕様どおり）:
 
@@ -276,10 +314,11 @@ YMEngine の `FmEngineApi.h`（`8f81213`）にまだ無い。CLAUDE.md の規則
   RAM は書ける割り当て、ROM は書けない割り当てとしてブロックをそのまま参照する
   （ROM の複製は仕様で「してよい」であって、しなくてもよい）
 - 割り当てが無い間は、`SetMemory` が書き込む 256KB を 0 番地からの 1 つの割り当てとして渡す
-- `FM_MEM_ADPCM_B_ROMMODE` は `FM_ERR_INVALID_ARG`（ROM モードのメモリが無い。§3.2）
-- 仕様書の表に OPL2EX の行は無いが、足す必要は無い（2026-10-02 ユーザー回答）。OPL2EX の
-  メモリは Y8950 / YM2608 と同じ ADPCM-B であり、メモリの共有も外部回路の作り方しだいで
-  Y8950 / YM2608 でもありうるもので、OPL2EX 特有の機能ではない
+- `ADPCM_B_ROMMODE` は `FM_ERR_INVALID_ARG`（ROM モードのメモリが無い。§3.2）
+- 番号で指定していた頃、仕様書の表に OPL2EX の行は無く、足す必要も無いとされた
+  （2026-10-02 ユーザー回答）。OPL2EX のメモリは Y8950 / YM2608 と同じ ADPCM-B であり、
+  メモリの共有も外部回路の作り方しだいで Y8950 / YM2608 でもありうるもので、OPL2EX 特有の
+  機能ではない。名前での指定になってからの扱いは §6.7
 
 **Y8950**（制限付き。2026-10-02 ユーザー決定）:
 
@@ -300,7 +339,8 @@ emu8950 は RAM モードのメモリ（`memory[0]`）と ROM モードのメモ
 - 再生中の `wave` も同じ配列を指すので、差し替えた配列を指していたら一緒に差し替える
 - `OPL_delete` は `memory[]` を解放するので、破棄の前に emu8950 自身の配列へ戻す
 - `SetMemory` は emu8950 自身の配列へ直接複製する（割り当て中に `OPL_writeADPCMData` を
-  呼ぶと、呼び出し側のブロックや複製に書いてしまうため）
+  呼ぶと、呼び出し側のブロックや複製に書いてしまうため）。`ADPCM_B` は `memory[0]`、
+  `ADPCM_B_ROMMODE` は `memory[1]` だった配列へ入る
 
 **Y8950 で仕様と食い違うところ**（**確認済み(読解)**。試験はしていない）:
 
@@ -325,6 +365,24 @@ emu8950 は RAM モードのメモリ（`memory[0]`）と ROM モードのメモ
   書いた値が見える、`Write` で書いた値は次の `Generate` が戻るまでに入る）は満たす
   （**確認済み(読解)**: `chipWrite` が `write_mutex` の中でコアに書く。試験でも 0Fh の
   書き込みが `Write` の直後にブロックへ入っていることを見ている）
+
+### 3.8 クロック
+
+`FmEngine_AddChip` は `clock` = 0 に `FM_ERR_INVALID_ARG` を返す。エンジンは既定の
+クロックを持たない（仕様 FMEngineTest `866f4a3`。`kChipTable` から既定値の列を外した）。
+
+- 判定は名前の照合より前に置いた。未知の名前で `clock` = 0 のときは
+  `FM_ERR_INVALID_ARG` になる（仕様はこの組み合わせを定めていない。YMEngine `7d8ed2d` と
+  EPSGemuEngine `7cd1e8a` が同じ順。**確認済み(読解)**）
+- 外す前の既定値は `SSG` が 2000000、他の 13 チップが 3579545。同じ値を渡せば出力は
+  変わらない（§5.5）
+- Y8960 の OPLL-EX / OPL2-EX のクロックは 3.579545MHz（MSSX `hardware.md`）。`SSGS` の
+  `clock` の意味は §3.5
+- README の対応チップ一覧は、既定のクロックの列をやめてネイティブレートを式で書いた
+  （EPSGemuEngine `7cd1e8a` の README と同じ形）
+
+**やり直しの値段**: 既定値を戻すなら `kChipTable` に列を足して `createChip` の 1 行。
+仕様に反するので、戻すのは仕様が変わったときだけ。
 
 ## 4. 決定事項
 
@@ -361,11 +419,25 @@ emu2149 の内蔵レート変換は、3 チャンネルを足したモノラル�
 
 ### 5.1 api_test（**確認済み**）
 
-`tests/api_test.cpp`、78 項目すべて通過（OPL2EX / OPLLEX 時点で 40、SSGS で 58）。Windows（Visual Studio 2026、x64 Release）と
-Linux（WSL の Ubuntu 18.04、GCC 7.5、`-Wall -Wextra -fvisibility=hidden -fno-common`。
-cmake が無かったので同じフラグで gcc / g++ を直接呼んだ）の両方。Linux では
-`src/` と `tests/` に警告なし（`extern/` の警告は見ていない）、公開記号は `FmEngine_*` の
-17 個だけ（`nm -D`）。Windows のエクスポートも同じ 17 個（`dumpbin /exports`）。
+`tests/api_test.cpp`、91 項目すべて通過（OPL2EX / OPLLEX 時点で 40、SSGS で 58、外部メモリの
+割り当てで 78、名前での指定と `clock` = 0 の廃止で 91）。2026-10-03 の 91 項目は、Windows
+（Visual Studio 17 2022 ジェネレータ、MSVC 14.44、x64 Release。`ctest` でも通過）と Linux
+（WSL の Debian、GCC 10.2.1、`-Wall -Wextra -Wno-unused-parameter -fvisibility=hidden
+-fno-common`。WSL の cmake が 3.18 で `CMakeLists.txt` の要求 3.20 に足りないので、同じ
+フラグで gcc / g++ を直接呼んだ）の両方で通した。78 項目までは Visual Studio 2026 と
+WSL の Ubuntu 18.04（GCC 7.5）で通していた。
+
+- 警告: Windows は今回コンパイルし直した `src/DSAemuEngine.cpp` と `tests/api_test.cpp` に
+  警告なし（`/W3`。他のファイルは増分ビルドで再コンパイルされていない）。Linux は `src/` と
+  `tests/` に警告なし（`extern/` の警告は見ていない）
+- 公開記号: Windows は `dumpbin /exports` で 20 個、Linux は `nm -D --defined-only` で
+  `FmEngine_*` の 20 個だけ。Windows の 20 個は `src/FmEngineApi.h` が宣言する 20 関数と
+  名前が一致する（仕様の内訳は必須 12、部位 4、外部メモリ 3、外部メモリの割り当て 1）
+- `src/FmEngineApi.h` は C（GCC の `-std=c11 -Wall -Wextra -Werror`）でも通る
+- `api_test` は関数ポインタの型をヘッダの宣言から取る（`decltype`）。エンジンは同じ宣言に
+  対して定義しているので、引数の型の食い違いはどちらかのコンパイルで止まる
+- 仕様から外れた 2 関数（`FmEngine_GetPartMask`、`FmEngine_GetMemorySize`）が
+  エクスポートに残っていると、`api_test` は読み込みの段階で失敗にする
 
 試験の作り: 新しいチップは、素のコアのチップに同じ書き込みをして出力を突き合わせる。
 
@@ -382,6 +454,13 @@ cmake が無かったので同じフラグで gcc / g++ を直接呼んだ）の
 | ユーザー音色 | バンク 0 と 3 でビット一致、`OPLL` ともビット一致 |
 | `49h` 以降 | 書いても出力が変わらない |
 | 部位ゲイン | メロディだけ = メロディだけを鳴らした `OPLL` とビット一致、リズムも同様。既定ゲインの出力 = 両者の和 |
+| 部位の列挙 | OPLL 系 4 チップが `MELODY` と `RHYTHM`、他の 10 チップは 0 個（並びは見ない。2 回列挙して同じ）。未知の `chip_id` は 0 個・null、範囲外の `index` は null |
+| 部位の名前の照合 | 持たない部位（`SSG`、OPL2 や OPLLEX への `MELODY`）、大文字小文字の違い（`melody`）、前方だけの一致（`MEL`、`MELODYX`）、空文字列、null、未知の `chip_id` は `Set` / `Get` とも `FM_ERR_INVALID_ARG`。拒否した呼び出しでゲインが変わらない |
+| `clock` = 0 | 14 チップすべてで `FM_ERR_INVALID_ARG`、チップは 1 つも足されない |
+| 外部メモリの列挙 | `Y8950` が `ADPCM_B` と `ADPCM_B_ROMMODE`、`OPL2EX` が `ADPCM_B`、他の 12 チップは 0 個。未知の `chip_id` は 0 個・null、範囲外の `index` は null |
+| 外部メモリの名前の照合 | 持たないメモリ（OPL2EX の `ADPCM_B_ROMMODE`、OPL2 の `ADPCM_B`、`PCM`、`ADPCM_A`）、大文字小文字の違い、前方だけの一致（`ADPCM`、`ADPCM_B_ROM`、`ADPCM_B_ROMMODEX`）、空文字列、null、未知の `chip_id` は `SetMemory` / `SetMemoryEx` とも `FM_ERR_INVALID_ARG` |
+| 列挙した名前 | 列挙で返った名前は、どれも `SetMemory` と `SetMemoryEx` が `FM_OK` で受ける |
+| `SetMemory` の `ADPCM_B_ROMMODE` | `Y8950` で ROM モードで鳴らすと、同じデータを `ADPCM_B` に入れて RAM モードで鳴らしたものとビット一致。RAM モードで鳴らすと、何も入れていないときと一致 |
 | 位相合わせ | `Y8950` `OPL` `OPL2` `OPL2EX` が 48kHz で L == R |
 | SSGS の SSG-1 / SSG-2 | パンが中央のとき、それぞれ `SSG`（`clock` = 3579545 / 2）とビット一致 |
 | SSGS の `clock` | 6.144MHz のとき `SSG`（2.048MHz）とビット一致。ネイティブレートが SSG のクロック / 8 |
@@ -447,6 +526,43 @@ M5 は最初の版の試験では落ちない作りだった（**確認済み(�
 入っても「和が全体と一致」「片方を 0 にすると鳴る」は成り立つ。最初の版に M5 を掛けて
 走らせてはいない）。「片方だけを鳴らしたチップと一致」を足して、落ちることを確かめた。
 
+名前での指定と `clock` = 0 の廃止（2026-10-03）。対照（変異なし）を同じ手順でビルドすると
+91 項目すべて通る。どの変異も終了コードは 1:
+
+| 壊し方 | 落ちた項目 |
+|---|---|
+| N1 `clock` = 0 を既定値に読み替える | `clock` = 0 の 1 件 |
+| N2 名前の照合で大文字小文字を区別しない | 部位と外部メモリの「名前の全体が一致」各 1 件、拒否した呼び出しの後で部位ゲインを読む 2 件（4 件） |
+| N3 前方一致（渡された名前の長さまで） | N2 と同じ 4 件 |
+| N3b 前方一致（表の名前の長さまで） | 上に加えて、持たないメモリ、列挙した名前、ROM モードのメモリの項目（10 件） |
+| N4 部位の名前を入れ替える | メロディだけ / リズムだけの 2 件 |
+| N5 外部メモリの名前を入れ替える | 外部メモリの列挙、持たないメモリ、`SetMemory` / `SetMemoryEx` の項目（14 件） |
+| N6 `SetMemory` が名前を見ずに RAM モードのメモリへ書く | `SetMemory` の `ADPCM_B_ROMMODE` の 2 件 |
+| N7 `SetMemory` が持たないメモリに `FM_ERR_UNAVAILABLE` を返す | 外部メモリの名前の照合の 3 件 |
+| N8 `OPL2EX` が `ADPCM_B_ROMMODE` も列挙する | 列挙、範囲外の `index`、持たないメモリの 2 件（4 件） |
+| N9 `OPLLEX` が部位を持つ | 部位の列挙、持たない部位（2 件） |
+| N10 `GetPartName` が範囲外でも名前を返す | 範囲外の `index` の 1 件 |
+| N11 `GetMemoryName` が範囲外でも名前を返す | 範囲外の `index` の 1 件 |
+| N12 名前が null のとき先頭の項目として扱う | 部位と外部メモリの null の各 1 件、拒否した呼び出しの後で部位ゲインを読む 2 件（4 件） |
+| N13 `FmEngine_GetPartMask` のエクスポートを残す | 読み込みで失敗（`stale export` を出して終了。試験の項目は 1 つも走らない） |
+| N14 `SetPartGain` が名前を見ずに先頭の部位へ書く | 設定して読み戻す 1 件、メロディだけ / リズムだけの 2 件（3 件） |
+| N15 `SetMemoryEx` が名前を見ずに RAM モードのメモリへ割り当てる | 列挙した名前、ROM モードのメモリに ROM / RAM を割り当てる 2 件（3 件） |
+| N16 `GetPartCount` が未知の `chip_id` で 1 を返す | 未知の `chip_id` の 1 件 |
+| N17 `GetMemoryCount` が未知の `chip_id` で 1 を返す | 未知の `chip_id` の 1 件 |
+| N18 `FmEngine_GetMemorySize` のエクスポートを残す | 読み込みで失敗（N13 と同じ） |
+| N19 部位ゲインの既定値を 0.5 にする | 既定値の 2 件、部位ゲインの 5 件（7 件） |
+
+N5 では「`SetMemory` の `ADPCM_B_ROMMODE` が ROM モードで鳴る」の項目は落ちない（比べる
+相手も同じ表で入れ替わり、両方が空のメモリを鳴らして一致する）。対になる「RAM モードの
+メモリは空のまま」の項目が落ちる。
+
+**今回回し直していないもの**: M1-M7、S1-S7、E1-E7。対象の項目のうち、部位ゲインと
+外部メモリの割り当てのものは定数を名前の文字列に置き換えただけで、N4・N5・N14・N15 が
+同じ項目を落としている。それ以外の項目は変えていない。
+
+未知の `chip_id` で `GetPartName` / `GetMemoryName` が null を返すことは、変異で確かめて
+いない（範囲の判定を外すと範囲外の添字を読むので、落ち方が決まらない）。
+
 **見ていないもの**: OPLL 系の位相合わせは DLL 越しでは直接見られない（L と R に別の
 信号を振り分けているため）。同じ関数 `calcStereoAligned` を通る OPL 系で見ており、
 OPLL は次の §5.3 で見ている。
@@ -476,10 +592,46 @@ OPLL は次の §5.3 で見ている。
 
 - 実機との一致。Y8960 の実機は未完成で、OPL2 は jtopl2、OPLL は IKAOPLL（両フォークの
   `hardware-notes.md` §1。**確認済み(読解)**）
-- FMEngineTest を本 DLL で走らせること（パッチに `OPL2EX` / `OPLLEX` が無い）
+- FMEngineTest で `SCCP` / `OPL2EX` / `OPLLEX` / `SSGS` を鳴らすこと（パッチが無い）。
+  パッチのある 10 チップは §5.5
+- FMEngineTest から ROM ファイルが渡ること。FMEngineTest が ROM ファイルを決めているのは
+  OPNA / OPNB / OPNBB だけで、本エンジンのチップには渡すファイルが無い（§5.5 の `[MEM]` の行）
+- 番号で指定する形の呼び出し側（追随前の FitomEmuIF、Y8960Sequencer）とこの DLL を
+  組み合わせたときの挙動。仕様の前提では組み合わせない（§0）
 - macOS でのビルド
 - SSGS のパンの分配則とリセット値が実機と合っていること。データシートにも RTL にも記載が無い
   （blueMSX-plus_Y8960 §5.3。**確認済み(読解)**）
+
+### 5.5 名前での指定の前後の比較（**確認済み**、2026-10-03）
+
+変更前（`85a7276` のソース）の DLL と変更後の DLL を、どちらも Windows の x64 Release で
+ビルドして比べた。比較に使ったプログラムはリポジトリに置いていない（変更前の DLL が要るため）。
+
+**DLL を直接呼ぶ比較**: 変更前は `clock` = 0 と番号（`FM_MEM_ADPCM_B`、`FM_PART_OPLL_MELODY` /
+`FM_PART_OPLL_RHYTHM`）、変更後は外す前の既定値（§3.8）と名前で呼び、0.5 秒ぶんの出力を
+バイトで比べた。
+
+- 14 チップそれぞれの発音、`Y8950` と `OPL2EX` の ADPCM（`SetMemory`）、`OPLL` の部位ゲイン
+  2 通り（`RHYTHM` を 0.25 / 0.75、`MELODY` を 0.5 / 0）の 18 通りを、48000 / 44100 /
+  49715Hz で。54 通りすべてがバイト一致し、どれも無音ではない（ピークが 0.059 以上）
+- 比較が食い違いを見つけられること: 変更後の代わりに §5.2 の N4 の DLL を渡すと部位ゲインの
+  6 通りが食い違う。N5 の DLL を渡すと `Y8950` の ADPCM が食い違い、`OPL2EX` の
+  `SetMemory` が `FM_ERR_INVALID_ARG` を返したところで比較が止まる
+
+**FMEngineTest からの比較**: FMEngineTest の Release の exe（2026-10-03 16:35 にビルドされた
+もの。`20c4923` より後だが、どの作業ツリーからビルドされたかは確かめていない）に、変更前と
+変更後の DLL で同じパッチを WAV に書き出させた。パッチは FMEngineTest `20c4923` の
+`src/patches/`。
+
+- `all.json`（48000Hz、102 秒）と `test_patches.json`（44100Hz、30 秒）の WAV が、変更前と
+  変更後でバイト一致する。どちらも無音ではない（16bit のピークが 18237 と 13593）。
+  `all.json` で鳴ったのは 10 チップ（`DCSG` `OPL` `OPL2` `OPLL` `OPLLP` `OPLLX` `SCC` `SSG`
+  `VRC7` `Y8950`）、`test_patches.json` はそのうちの 5 チップ。`SCCP` / `OPL2EX` /
+  `OPLLEX` / `SSGS` のパッチは無い。パッチの `SSG` の `clock` は 3579545
+- 変更前の DLL には `FmEngine_GetMemoryCount is not exported: ROM files will not be loaded.`
+  が出る。変更後の DLL にはこの行が出ず、`[MEM] Y8950 ADPCM_B` と
+  `[MEM] Y8950 ADPCM_B_ROMMODE`（ROM ファイルが決まっていないメモリの表示）が出る。
+  新しい呼び出し側から、本エンジンの外部メモリの列挙が読めている
 
 ## 6. 未決事項
 
@@ -489,9 +641,15 @@ YM2413 の部位はメロディとリズムが別の端子から出ることに�
 FPGA 内のブロックで、デジタルミキサーへの渡し方は分からない（ミキサーのレジスタ表は
 未記入。MSSX `hardware.md`。**確認済み(読解)**）。
 
-**値段**: 出力はすでに 2 系統で取り出しているので、`partMask()` に 1 行、README の表、
-試験の期待値。加えて FMEngineTest の仕様書の部位の表に `OPLLEX` を足す必要がある
-（仕様書の側の作業）。
+**値段**: 出力はすでに 2 系統で取り出しているので、`partNames()` に 1 行、README の表、
+試験の期待値 2 か所（§5.2 の N9 がこの変更にあたり、落ちるのはその 2 項目）。
+
+仕様書の変更は要らなくなった（FMEngineTest `20c4923`: 表に無いチップの部位は、名前と
+既定値をエンジンが決める）。決めるのは持たせるかどうかと、名前（未決。OPLL 系と同じ
+`MELODY` / `RHYTHM` にするなら名前の表を共用できる）。Y8960emu も OPLLEX を実装するので、
+仕様の「同じチップを複数のエンジンが実装するときは、表に足して名前を揃える」にあたる
+（Y8960emu は `da2ab34` 時点で部位ゲインをエクスポートしていない。FMEngineTest の
+CHANGELOG による）。
 
 ### 6.2 OPL2EX 2 個でサンプル RAM を共有させるか — **決着。`FmEngine_SetMemoryEx` で共有する（2026-10-02）**
 
@@ -570,6 +728,22 @@ blueMSX-plus_Y8960 §5.3 には、ユーザーからの別案「0 と 8 をと�
 判断になる（フォークは `else` 節の 2 行。`Y8950` はエンジン側で `07h` の書き込みを見て
 `play_start` を下ろすことになる。**未検証**）。
 
+### 6.7 仕様書の表に OPL2EX の外部メモリを足すか
+
+名前での指定（FMEngineTest `20c4923`）では、表に無いチップの外部メモリの名前はエンジンが
+決め、「同じチップを複数のエンジンが実装するときは、表に足して名前を揃える」。`OPL2EX` は
+本エンジンと Y8960emu が実装していて、仕様書の「外部メモリの名前」の表に行が無い。
+
+- 本エンジンは `ADPCM_B` にした（§3.5。2026-10-03 にユーザーが了承）
+- Y8960emu は `da2ab34` 時点で名前での指定に追随していない（§2）。追随するときに別の名前を
+  付けると、同じチップでエンジンによって名前が分かれる
+- 番号で指定していた頃は「表に行を足す必要は無い」だった（2026-10-02 ユーザー回答。§3.7）。
+  理由は「新しい種類のメモリではない」で、名前がチップごとに独立になったいまも
+  成り立つかは聞いていない
+
+**値段**: 表に足すのは FMEngineTest 側の 1 行。名前が `ADPCM_B` のままなら本リポジトリは
+変わらない。別の名前になったら §3.5 の「外部メモリの名前」の値段。
+
 ## 7. 見送った提案
 
 - **blueMSX-plus_Y8960 の OPL2EX（openMSX 由来）を写す**。理由: GPL（§2.1）
@@ -590,6 +764,17 @@ blueMSX-plus_Y8960 §5.3 には、ユーザーからの別案「0 と 8 をと�
   分けると §9 と 2 箇所を合わせることになる。代わりに §9 の先頭に表と確かめ方を置いた。
   前提: 報告先が emu2413 / emu8950 の 6 件で、読むのが AI であること。件数や報告先が増えるか、
   人が一覧として読むようになったら見直す
+- **`OPL2EX` の外部メモリの名前と、`Y8950` の `SetMemory` の `ADPCM_B_ROMMODE` の意味を、
+  実装の前にユーザーに聞く**（2026-10-03）。CLAUDE.md は外から見える値を決める前に聞くと
+  定めている。聞かなかった理由: どちらも既決の事項から 1 通りに決まると判断した（§3.5 の
+  各行の「前提」）。その判断が外れていたときの値段は §3.5 の各行。コミットの前に報告して
+  確認を求めることで代え、ユーザーは報告の内容を了承した
+- **`api_test` で DLL のエクスポートの一覧を丸ごと仕様と突き合わせる**（2026-10-03）。
+  理由: 一覧を取るには PE / ELF のエクスポート表を読むことになる。仕様から外れた 2 関数が
+  残っていないことだけを試験に入れ、一覧は `dumpbin` / `nm` で見た（§5.1）。前提: 関数の
+  増減は仕様の改訂のときにしか起きず、そのたびに一覧を見ること
+- **変更前の既定のクロックを README に残す**（2026-10-03）。理由: README は現在の仕様を
+  書く文書で、エンジンはもう既定値を持たない。値は §3.8 に置いた
 
 ## 8. 実行経緯
 
@@ -644,6 +829,25 @@ blueMSX-plus_Y8960 §5.3 には、ユーザーからの別案「0 と 8 をと�
    ついでの 2 件（`07h` = 00h、内部の記号）も出す
 5. 6 件を投稿した（emu2413#20、emu8950#5〜#9）。本リポジトリのコードは変えていない。
    本リポジトリ側で直流を止めるかは未決（§6.6）
+
+### 2026-10-03 — 部位と外部メモリの名前での指定、clock = 0 の廃止
+
+1. 依頼: FmEngineApi が改訂されたので追随する。FMEngineTest は `e002890` から 3 コミット
+   進んでいた: `c0589c1`（`SetMemory` の `data` に書き込まない）、`866f4a3`（`clock` = 0 の
+   廃止）、`20c4923`（部位と外部メモリを名前で指定。ヘッダの正本が FMEngineTest の
+   `include/FmEngineApi.h` に移った）
+2. ヘッダを正本の写しに差し替え、CLAUDE.md の写し元の規則を書き換えた。エンジンと試験に
+   置いていた `FmEngine_SetMemoryEx` の仮の宣言を消した
+3. エンジン: 名前の表（部位、外部メモリ）と列挙の 4 関数を足し、`FmEngine_GetPartMask` と
+   `FmEngine_GetMemorySize` を消した。`clock` = 0 は `FM_ERR_INVALID_ARG`。持たないメモリへの
+   `SetMemory` は `FM_ERR_UNAVAILABLE` から `FM_ERR_INVALID_ARG` になった。`Y8950` の
+   `SetMemory` は `ADPCM_B_ROMMODE` も受ける（§3.5）
+4. 試験を 78 項目から 91 項目にした（番号の頃の 7 項目を外し、20 項目を足した）。変異 N1-N19 で
+   落ちることを確かめた（§5.2）
+5. 変更前の DLL と出力を比べ、FMEngineTest の exe からも走らせた（§5.5）
+6. 外に出る値のうち 2 つ（`OPL2EX` の外部メモリの名前、`SetMemory` の `ADPCM_B_ROMMODE` の
+   意味）は聞かずに決めた（§7）。コミットの前に報告し、ユーザーが了承した。`OPLLEX` の
+   部位（§6.1）と仕様書の表への `OPL2EX` の追加（§6.7）は、報告に挙げたが回答は無く、未決のまま
 
 ## 9. 上流へ報告した不具合
 

@@ -16,9 +16,9 @@
 
 - **`extern/` の submodule は改造しない。** 改造が要るコアは `src/` の下にフォークし、
   記号を改名して素のコアと同じバイナリに共存させる。由来と差分は `doc/plan.md` に書く
-- **`src/FmEngineApi.h` は YMEngine の `src/FmEngineApi.h` の写し。** 中身を直接
-  直さない。API の仕様の正は FMEngineTest の `docs/FmEngineApi.md`。改訂されたら
-  両方を見て写し直し、エンジンを追随させる。仕様が写し元より先に進んでいるときは、
+- **`src/FmEngineApi.h` は FMEngineTest の `include/FmEngineApi.h` の写し。** 中身を直接
+  直さない。API の仕様の正は同じリポジトリの `docs/FmEngineApi.md`。改訂されたら
+  ヘッダを写し直し、エンジンを追随させる。仕様書がヘッダより先に進んでいるときは、
   足りない型と関数を `src/DSAemuEngine.cpp` と `tests/api_test.cpp` に仕様どおりの名前で
   宣言する（写し直すと重複定義のコンパイルエラーになり、消し忘れない）
 - **GPL のコードを持ち込まない。** 本リポジトリは MIT。openMSX / blueMSX 由来の

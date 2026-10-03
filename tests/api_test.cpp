@@ -23,36 +23,34 @@
 #  include <dlfcn.h>
 #endif
 
-// FmEngine_SetMemoryEx の型。仕様 (FMEngineTest の docs/FmEngineApi.md) にあるが、
-// 写し元の YMEngine の FmEngineApi.h にはまだ無い。ヘッダを写し直したら消す
-static constexpr FmMemoryType FM_MEM_ADPCM_B_ROMMODE = (FmMemoryType)4;
-typedef enum FmMemoryAccess { FM_ACCESS_ROM = 0, FM_ACCESS_RAM = 1 } FmMemoryAccess;
-
 namespace {
 
 // ---------------------------------------------------------
 //  DLL の読み込み
 // ---------------------------------------------------------
+// 型はヘッダの宣言から取る。エンジンも同じヘッダの宣言に対して定義しているので、
+// 引数の食い違いはどちらかのコンパイルで止まる
 struct Api {
-    FmEngineHandle (FMENGINE_CALL *Create)(uint32_t);
-    void        (FMENGINE_CALL *Destroy)(FmEngineHandle);
-    uint32_t    (FMENGINE_CALL *Inquiry)(FmEngineHandle);
-    const char* (FMENGINE_CALL *GetSupportedChip)(FmEngineHandle, uint32_t);
-    FmResult    (FMENGINE_CALL *AddChip)(FmEngineHandle, const char*, uint32_t, uint32_t*);
-    const char* (FMENGINE_CALL *GetChipName)(FmEngineHandle, uint32_t);
-    uint32_t    (FMENGINE_CALL *GetNativeRate)(FmEngineHandle, uint32_t);
-    uint32_t    (FMENGINE_CALL *GetSampleRate)(FmEngineHandle);
-    FmResult    (FMENGINE_CALL *Write)(FmEngineHandle, uint32_t, uint8_t, uint8_t, uint32_t);
-    FmResult    (FMENGINE_CALL *SetGain)(FmEngineHandle, uint32_t, float, float);
-    FmResult    (FMENGINE_CALL *GetGain)(FmEngineHandle, uint32_t, float*, float*);
-    FmResult    (FMENGINE_CALL *SetPartGain)(FmEngineHandle, uint32_t, FmPart, float, float);
-    FmResult    (FMENGINE_CALL *GetPartGain)(FmEngineHandle, uint32_t, FmPart, float*, float*);
-    FmResult    (FMENGINE_CALL *GetPartMask)(FmEngineHandle, uint32_t, uint32_t*);
-    FmResult    (FMENGINE_CALL *SetMemory)(FmEngineHandle, uint32_t, FmMemoryType, const uint8_t*, uint32_t);
-    FmResult    (FMENGINE_CALL *SetMemoryEx)(FmEngineHandle, uint32_t, FmMemoryType, uint32_t,
-                                             uint8_t*, uint32_t, FmMemoryAccess);
-    uint32_t    (FMENGINE_CALL *GetMemorySize)(FmEngineHandle, uint32_t, FmMemoryType);
-    FmResult    (FMENGINE_CALL *Generate)(FmEngineHandle, float*, float*, uint32_t);
+    decltype(&FmEngine_Create)           Create;
+    decltype(&FmEngine_Destroy)          Destroy;
+    decltype(&FmEngine_Inquiry)          Inquiry;
+    decltype(&FmEngine_GetSupportedChip) GetSupportedChip;
+    decltype(&FmEngine_AddChip)          AddChip;
+    decltype(&FmEngine_GetChipName)      GetChipName;
+    decltype(&FmEngine_GetNativeRate)    GetNativeRate;
+    decltype(&FmEngine_GetSampleRate)    GetSampleRate;
+    decltype(&FmEngine_Write)            Write;
+    decltype(&FmEngine_SetGain)          SetGain;
+    decltype(&FmEngine_GetGain)          GetGain;
+    decltype(&FmEngine_GetPartCount)     GetPartCount;
+    decltype(&FmEngine_GetPartName)      GetPartName;
+    decltype(&FmEngine_SetPartGain)      SetPartGain;
+    decltype(&FmEngine_GetPartGain)      GetPartGain;
+    decltype(&FmEngine_GetMemoryCount)   GetMemoryCount;
+    decltype(&FmEngine_GetMemoryName)    GetMemoryName;
+    decltype(&FmEngine_SetMemory)        SetMemory;
+    decltype(&FmEngine_SetMemoryEx)      SetMemoryEx;
+    decltype(&FmEngine_Generate)         Generate;
 };
 
 void* openLibrary(const char* path) {
@@ -94,13 +92,19 @@ bool loadApi(const char* path, Api& api) {
     bind(api.Write,            "FmEngine_Write");
     bind(api.SetGain,          "FmEngine_SetGain");
     bind(api.GetGain,          "FmEngine_GetGain");
+    bind(api.GetPartCount,     "FmEngine_GetPartCount");
+    bind(api.GetPartName,      "FmEngine_GetPartName");
     bind(api.SetPartGain,      "FmEngine_SetPartGain");
     bind(api.GetPartGain,      "FmEngine_GetPartGain");
-    bind(api.GetPartMask,      "FmEngine_GetPartMask");
+    bind(api.GetMemoryCount,   "FmEngine_GetMemoryCount");
+    bind(api.GetMemoryName,    "FmEngine_GetMemoryName");
     bind(api.SetMemory,        "FmEngine_SetMemory");
     bind(api.SetMemoryEx,      "FmEngine_SetMemoryEx");
-    bind(api.GetMemorySize,    "FmEngine_GetMemorySize");
     bind(api.Generate,         "FmEngine_Generate");
+    // 部位と外部メモリを番号で指定していた頃の関数。仕様から外れた
+    for (const char* name : { "FmEngine_GetPartMask", "FmEngine_GetMemorySize" }) {
+        if (findSymbol(lib, name)) { std::printf("stale export: %s\n", name); ok = false; }
+    }
     return ok;
 }
 
@@ -117,6 +121,8 @@ void check(const std::string& what, bool ok) {
 // ---------------------------------------------------------
 constexpr uint32_t kRate = 48000;
 constexpr uint32_t kFrames = 4800;  // 0.1 秒
+// クロックを指定しない試験でチップに渡す値。SSGS ではマスタークロックになる
+constexpr uint32_t kClock = 3579545;
 
 struct Reg { uint8_t reg, val; };
 using Regs = std::vector<Reg>;
@@ -132,7 +138,7 @@ struct Engine {
     Engine(const Engine&) = delete;
     Engine& operator=(const Engine&) = delete;
 
-    uint32_t add(const char* name, uint32_t clock = 0) {
+    uint32_t add(const char* name, uint32_t clock = kClock) {
         uint32_t id = 0xFFFFFFFFu;
         if (A.AddChip(h, name, clock, &id) != FM_OK) {
             std::printf("AddChip(%s) failed\n", name);
@@ -288,7 +294,7 @@ std::function<void(Engine&, uint32_t)> withAdpcm(const Regs& regs, bool load = t
     return [regs, load](Engine& e, uint32_t id) {
         if (load) {
             auto data = adpcmData(kAdpcmBytes);
-            A.SetMemory(e.h, id, FM_MEM_ADPCM_B, data.data(), (uint32_t)data.size());
+            A.SetMemory(e.h, id, "ADPCM_B", data.data(), (uint32_t)data.size());
         }
         e.write(id, regs);
     };
@@ -297,17 +303,30 @@ std::function<void(Engine&, uint32_t)> withAdpcm(const Regs& regs, bool load = t
 // ---------------------------------------------------------
 //  試験
 // ---------------------------------------------------------
+const char* const kChips[] = {
+    "SSG", "OPLL", "OPLLP", "OPLLX", "VRC7", "Y8950", "OPL", "OPL2",
+    "SCC", "SCCP", "DCSG", "OPL2EX", "OPLLEX", "SSGS",
+};
+constexpr uint32_t kChipCount = sizeof(kChips) / sizeof(kChips[0]);
+
+// kChips を順に足したエンジンでの chip_id
+constexpr uint32_t kOpll = 1, kY8950 = 5, kOpl2 = 7, kOpl2ex = 11, kOpllex = 12;
+
 void testChipList() {
-    static const char* expected[] = {
-        "SSG", "OPLL", "OPLLP", "OPLLX", "VRC7", "Y8950", "OPL", "OPL2",
-        "SCC", "SCCP", "DCSG", "OPL2EX", "OPLLEX", "SSGS",
-    };
     Engine e;
     const uint32_t n = A.Inquiry(e.h);
-    bool order = (n == sizeof(expected) / sizeof(expected[0]));
+    bool order = (n == kChipCount);
     for (uint32_t i = 0; order && i < n; ++i)
-        order = std::strcmp(A.GetSupportedChip(e.h, i), expected[i]) == 0;
+        order = std::strcmp(A.GetSupportedChip(e.h, i), kChips[i]) == 0;
     check("chip list keeps the old order and appends OPL2EX, OPLLEX, SSGS", order);
+
+    bool rejected = true;
+    for (const char* name : kChips) {
+        uint32_t id = 0;
+        rejected = rejected && A.AddChip(e.h, name, 0, &id) == FM_ERR_INVALID_ARG;
+    }
+    check("AddChip rejects clock 0 for every chip and adds nothing",
+          rejected && A.GetChipName(e.h, 0) == nullptr);
 
     uint32_t opl2ex = e.add("OPL2EX");
     uint32_t opllex = e.add("OPLLEX");
@@ -320,51 +339,77 @@ void testChipList() {
           std::strcmp(A.GetChipName(e.h, opllex), "OPLLEX") == 0);
 }
 
+using Names = std::vector<std::string>;
+
+// 仕様は並びを定めていないので、並べ替えて比べる
+template <typename Count, typename Name>
+Names listNames(Count count, Name name, Engine& e, uint32_t id) {
+    Names names;
+    const uint32_t n = count(e.h, id);
+    for (uint32_t i = 0; i < n; ++i) {
+        const char* s = name(e.h, id, i);
+        names.push_back(s ? s : "(null)");
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+bool isOneOf(const char* name, std::initializer_list<const char*> set) {
+    for (const char* s : set) if (!std::strcmp(name, s)) return true;
+    return false;
+}
+
 void testPartApi() {
-    static const char* chips[] = {
-        "SSG", "OPLL", "OPLLP", "OPLLX", "VRC7", "Y8950", "OPL", "OPL2",
-        "SCC", "SCCP", "DCSG", "OPL2EX", "OPLLEX", "SSGS",
-    };
-    const uint32_t opllParts = (1u << FM_PART_OPLL_MELODY) | (1u << FM_PART_OPLL_RHYTHM);
     Engine e;
-    bool masks = true;
-    for (const char* name : chips) {
+    bool lists = true;
+    for (const char* name : kChips) {
         uint32_t id = e.add(name);
-        uint32_t mask = 0xDEADBEEF;
-        bool isOpll = !std::strcmp(name, "OPLL") || !std::strcmp(name, "OPLLP") ||
-                      !std::strcmp(name, "OPLLX") || !std::strcmp(name, "VRC7");
-        if (A.GetPartMask(e.h, id, &mask) != FM_OK || mask != (isOpll ? opllParts : 0u)) {
-            std::printf("  part mask of %s = 0x%08X\n", name, mask);
-            masks = false;
+        const Names expected = isOneOf(name, { "OPLL", "OPLLP", "OPLLX", "VRC7" })
+                             ? Names{ "MELODY", "RHYTHM" } : Names{};
+        const Names parts = listNames(A.GetPartCount, A.GetPartName, e, id);
+        if (parts != expected || listNames(A.GetPartCount, A.GetPartName, e, id) != parts) {
+            std::printf("  %s has %u parts\n", name, A.GetPartCount(e.h, id));
+            lists = false;
         }
     }
-    check("part masks: melody+rhythm for the OPLL family, none elsewhere", masks);
+    check("parts: MELODY and RHYTHM for the OPLL family, none elsewhere", lists);
+    check("GetPartCount is 0 and GetPartName is null for an unknown chip_id",
+          A.GetPartCount(e.h, 1000) == 0 && A.GetPartName(e.h, 1000, 0) == nullptr);
+    check("GetPartName is null past the last part",
+          A.GetPartName(e.h, kOpll, 2) == nullptr && A.GetPartName(e.h, kOpl2, 0) == nullptr);
 
-    uint32_t mask = 0;
-    check("GetPartMask rejects an unknown chip_id",
-          A.GetPartMask(e.h, 1000, &mask) == FM_ERR_INVALID_ARG);
-
-    const uint32_t opll = 1, opl2 = 7;
     float l = -1, r = -1;
-    check("melody gain defaults to 1.0",
-          A.GetPartGain(e.h, opll, FM_PART_OPLL_MELODY, &l, &r) == FM_OK && l == 1.0f && r == 1.0f);
-    check("rhythm gain defaults to 1.0",
-          A.GetPartGain(e.h, opll, FM_PART_OPLL_RHYTHM, &l, &r) == FM_OK && l == 1.0f && r == 1.0f);
-    check("SetPartGain rejects a part the chip does not have",
-          A.SetPartGain(e.h, opll, FM_PART_OPN_SSG, 0.5f, 0.5f) == FM_ERR_INVALID_ARG &&
-          A.SetPartGain(e.h, opl2, FM_PART_OPLL_MELODY, 0.5f, 0.5f) == FM_ERR_INVALID_ARG &&
-          A.SetPartGain(e.h, opll, (FmPart)40, 0.5f, 0.5f) == FM_ERR_INVALID_ARG);
+    check("MELODY gain defaults to 1.0",
+          A.GetPartGain(e.h, kOpll, "MELODY", &l, &r) == FM_OK && l == 1.0f && r == 1.0f);
+    check("RHYTHM gain defaults to 1.0",
+          A.GetPartGain(e.h, kOpll, "RHYTHM", &l, &r) == FM_OK && l == 1.0f && r == 1.0f);
+
+    auto rejected = [&](uint32_t id, const char* part) {
+        return A.SetPartGain(e.h, id, part, 0.5f, 0.5f) == FM_ERR_INVALID_ARG &&
+               A.GetPartGain(e.h, id, part, &l, &r) == FM_ERR_INVALID_ARG;
+    };
+    check("part gain rejects a part the chip does not have",
+          rejected(kOpll, "SSG") && rejected(kOpl2, "MELODY") && rejected(kOpllex, "MELODY"));
+    check("part gain matches the whole name, case sensitively",
+          rejected(kOpll, "melody") && rejected(kOpll, "MEL") && rejected(kOpll, "MELODYX") &&
+          rejected(kOpll, ""));
+    check("part gain rejects a null name and an unknown chip_id",
+          rejected(kOpll, nullptr) && rejected(1000, "MELODY"));
+    check("  (the rejected calls changed nothing)",
+          A.GetPartGain(e.h, kOpll, "MELODY", &l, &r) == FM_OK && l == 1.0f && r == 1.0f &&
+          A.GetPartGain(e.h, kOpll, "RHYTHM", &l, &r) == FM_OK && l == 1.0f && r == 1.0f);
     check("SetPartGain then GetPartGain returns the values",
-          A.SetPartGain(e.h, opll, FM_PART_OPLL_RHYTHM, 0.25f, 0.75f) == FM_OK &&
-          A.GetPartGain(e.h, opll, FM_PART_OPLL_RHYTHM, &l, &r) == FM_OK && l == 0.25f && r == 0.75f);
+          A.SetPartGain(e.h, kOpll, "RHYTHM", 0.25f, 0.75f) == FM_OK &&
+          A.GetPartGain(e.h, kOpll, "RHYTHM", &l, &r) == FM_OK && l == 0.25f && r == 0.75f &&
+          A.GetPartGain(e.h, kOpll, "MELODY", &l, &r) == FM_OK && l == 1.0f && r == 1.0f);
 }
 
 void testOpllParts() {
     const Regs regs = concat({ opllNote(0, 1), opllRhythm() });
     auto withGains = [&](float ml, float mr, float rl, float rr) {
         return play("OPLL", [&](Engine& e, uint32_t id) {
-            A.SetPartGain(e.h, id, FM_PART_OPLL_MELODY, ml, mr);
-            A.SetPartGain(e.h, id, FM_PART_OPLL_RHYTHM, rl, rr);
+            A.SetPartGain(e.h, id, "MELODY", ml, mr);
+            A.SetPartGain(e.h, id, "RHYTHM", rl, rr);
             e.write(id, regs);
         });
     };
@@ -502,7 +547,7 @@ void testOpl2exAdpcm() {
     Out other = play("OPL2EX", [](Engine& e, uint32_t id) {
         uint32_t second = e.add("OPL2EX");
         auto data = adpcmData(kAdpcmBytes);
-        A.SetMemory(e.h, id, FM_MEM_ADPCM_B, data.data(), (uint32_t)data.size());
+        A.SetMemory(e.h, id, "ADPCM_B", data.data(), (uint32_t)data.size());
         e.write(second, adpcmPlay(0x00));
     });
     check("OPL2EX: each chip has its own sample RAM",
@@ -512,9 +557,7 @@ void testOpl2exAdpcm() {
     uint32_t id = e.add("OPL2EX");
     std::vector<uint8_t> big(300 * 1024, 0x77);
     check("OPL2EX: SetMemory larger than 256KB is clipped, not rejected",
-          A.SetMemory(e.h, id, FM_MEM_ADPCM_B, big.data(), (uint32_t)big.size()) == FM_OK);
-    check("OPL2EX: SetMemory rejects memory types other than ADPCM-B",
-          A.SetMemory(e.h, id, FM_MEM_PCM, big.data(), 16) == FM_ERR_UNAVAILABLE);
+          A.SetMemory(e.h, id, "ADPCM_B", big.data(), (uint32_t)big.size()) == FM_OK);
 }
 
 // YM2149 1 系統ぶん。base は SSGS では 0x00 (SSG-1) か 0x20 (SSG-2)
@@ -631,6 +674,68 @@ Regs adpcmWrite(const std::vector<uint8_t>& data) {
     return r;
 }
 
+void testMemoryApi() {
+    constexpr uint32_t kSpace = 256 * 1024;
+    const auto data = adpcmData(kAdpcmBytes);
+    std::vector<uint8_t> block(kSpace, 0);
+    Engine e;
+    bool lists = true;
+    for (const char* name : kChips) {
+        uint32_t id = e.add(name);
+        const Names expected = !std::strcmp(name, "Y8950")  ? Names{ "ADPCM_B", "ADPCM_B_ROMMODE" }
+                             : !std::strcmp(name, "OPL2EX") ? Names{ "ADPCM_B" } : Names{};
+        const Names memories = listNames(A.GetMemoryCount, A.GetMemoryName, e, id);
+        if (memories != expected || listNames(A.GetMemoryCount, A.GetMemoryName, e, id) != memories) {
+            std::printf("  %s has %u memories\n", name, A.GetMemoryCount(e.h, id));
+            lists = false;
+        }
+    }
+    check("memories: Y8950 has ADPCM_B and ADPCM_B_ROMMODE, OPL2EX has ADPCM_B", lists);
+    check("GetMemoryCount is 0 and GetMemoryName is null for an unknown chip_id",
+          A.GetMemoryCount(e.h, 1000) == 0 && A.GetMemoryName(e.h, 1000, 0) == nullptr);
+    check("GetMemoryName is null past the last memory",
+          A.GetMemoryName(e.h, kY8950, 2) == nullptr && A.GetMemoryName(e.h, kOpl2ex, 1) == nullptr &&
+          A.GetMemoryName(e.h, kOpl2, 0) == nullptr);
+
+    auto rejected = [&](uint32_t id, const char* memory) {
+        return A.SetMemory(e.h, id, memory, data.data(), 16) == FM_ERR_INVALID_ARG &&
+               A.SetMemoryEx(e.h, id, memory, 0, block.data(), 16, FM_ACCESS_ROM) == FM_ERR_INVALID_ARG;
+    };
+    check("SetMemory / SetMemoryEx reject a memory the chip does not have",
+          rejected(kOpl2ex, "ADPCM_B_ROMMODE") && rejected(kOpl2, "ADPCM_B") &&
+          rejected(kY8950, "PCM") && rejected(kY8950, "ADPCM_A"));
+    check("SetMemory / SetMemoryEx match the whole name, case sensitively",
+          rejected(kY8950, "adpcm_b") && rejected(kY8950, "ADPCM") && rejected(kY8950, "ADPCM_B_ROM") &&
+          rejected(kY8950, "ADPCM_B_ROMMODEX") && rejected(kY8950, ""));
+    check("SetMemory / SetMemoryEx reject a null name and an unknown chip_id",
+          rejected(kY8950, nullptr) && rejected(1000, "ADPCM_B"));
+
+    bool accepted = true;
+    for (uint32_t id = 0; id < kChipCount; ++id) {
+        const uint32_t n = A.GetMemoryCount(e.h, id);
+        for (uint32_t i = 0; i < n; ++i) {
+            const char* name = A.GetMemoryName(e.h, id, i);
+            accepted = accepted &&
+                A.SetMemory(e.h, id, name, data.data(), (uint32_t)data.size()) == FM_OK &&
+                A.SetMemoryEx(e.h, id, name, 0, block.data(), kSpace, FM_ACCESS_RAM) == FM_OK;
+        }
+    }
+    check("every listed memory is accepted by SetMemory and SetMemoryEx", accepted);
+
+    // ROM モードは 32 バイト単位だが、0 番地から読み終える前に止めるので、RAM モードで
+    // 同じデータを鳴らしたものと一致する
+    const Out ref   = play("Y8950", withAdpcm(adpcmPlay(0x00)));
+    const Out empty = play("Y8950", withAdpcm(adpcmPlay(0x00), false));
+    auto romModeFilled = [&](uint8_t reg08) {
+        return play("Y8950", [&](Engine& e, uint32_t id) {
+            A.SetMemory(e.h, id, "ADPCM_B_ROMMODE", data.data(), (uint32_t)data.size());
+            e.write(id, adpcmPlay(reg08));
+        });
+    };
+    check("Y8950: SetMemory to ADPCM_B_ROMMODE plays in ROM mode", same(romModeFilled(0x01), ref));
+    check("  (and leaves the RAM-mode memory empty)", same(romModeFilled(0x00), empty));
+}
+
 void testSetMemoryEx() {
     constexpr uint32_t kSpace = 256 * 1024;
     const auto data = adpcmData(kAdpcmBytes);
@@ -644,8 +749,8 @@ void testSetMemoryEx() {
         std::vector<uint8_t> block(kSpace, 0);
         Engine e;
         uint32_t a = e.add("OPL2EX"), b = e.add("OPL2EX");
-        bool ok = A.SetMemoryEx(e.h, a, FM_MEM_ADPCM_B, 0, block.data(), kSpace, FM_ACCESS_RAM) == FM_OK &&
-                  A.SetMemoryEx(e.h, b, FM_MEM_ADPCM_B, 0, block.data(), kSpace, FM_ACCESS_RAM) == FM_OK;
+        bool ok = A.SetMemoryEx(e.h, a, "ADPCM_B", 0, block.data(), kSpace, FM_ACCESS_RAM) == FM_OK &&
+                  A.SetMemoryEx(e.h, b, "ADPCM_B", 0, block.data(), kSpace, FM_ACCESS_RAM) == FM_OK;
         e.write(a, adpcmWrite(data));
         check("SetMemoryEx: a chip writes 0Fh straight into a RAM block",
               ok && std::equal(data.begin(), data.end(), block.begin()));
@@ -655,7 +760,7 @@ void testSetMemoryEx() {
     {
         std::vector<uint8_t> block(kSpace, 0);
         Out o = play("OPL2EX", [&](Engine& e, uint32_t id) {
-            A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 0, block.data(), kSpace, FM_ACCESS_RAM);
+            A.SetMemoryEx(e.h, id, "ADPCM_B", 0, block.data(), kSpace, FM_ACCESS_RAM);
             std::copy(data.begin(), data.end(), block.begin());
             e.write(id, adpcmPlay(0x00));
         });
@@ -668,8 +773,8 @@ void testSetMemoryEx() {
         auto split = [&](bool second) {
             Engine e;
             uint32_t a = e.add("OPL2EX"), b = e.add("OPL2EX");
-            A.SetMemoryEx(e.h, a, FM_MEM_ADPCM_B, 0, block.data(), kSpace / 2, FM_ACCESS_RAM);
-            A.SetMemoryEx(e.h, b, FM_MEM_ADPCM_B, 0, block.data() + kSpace / 2, kSpace / 2, FM_ACCESS_RAM);
+            A.SetMemoryEx(e.h, a, "ADPCM_B", 0, block.data(), kSpace / 2, FM_ACCESS_RAM);
+            A.SetMemoryEx(e.h, b, "ADPCM_B", 0, block.data() + kSpace / 2, kSpace / 2, FM_ACCESS_RAM);
             e.write(second ? b : a, adpcmPlay(0x00));
             return e.render();
         };
@@ -681,7 +786,7 @@ void testSetMemoryEx() {
         std::vector<uint8_t> block(data);
         auto at = [&](uint32_t start) {
             return play("OPL2EX", [&](Engine& e, uint32_t id) {
-                A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 0x10000, block.data(), (uint32_t)block.size(), FM_ACCESS_RAM);
+                A.SetMemoryEx(e.h, id, "ADPCM_B", 0x10000, block.data(), (uint32_t)block.size(), FM_ACCESS_RAM);
                 e.write(id, adpcmPlay(0x00, start));
             });
         };
@@ -691,7 +796,7 @@ void testSetMemoryEx() {
     {
         std::vector<uint8_t> rom(data);
         Out o = play("OPL2EX", [&](Engine& e, uint32_t id) {
-            A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 0, rom.data(), (uint32_t)rom.size(), FM_ACCESS_ROM);
+            A.SetMemoryEx(e.h, id, "ADPCM_B", 0, rom.data(), (uint32_t)rom.size(), FM_ACCESS_ROM);
             e.write(id, adpcmWrite(std::vector<uint8_t>(kAdpcmBytes, 0x88)));
             e.write(id, adpcmPlay(0x00));
         });
@@ -702,9 +807,9 @@ void testSetMemoryEx() {
         std::vector<uint8_t> block(kSpace, 0);
         auto legacy = [&](bool unmap) {
             return play("OPL2EX", [&](Engine& e, uint32_t id) {
-                A.SetMemory(e.h, id, FM_MEM_ADPCM_B, data.data(), (uint32_t)data.size());
-                A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 0, block.data(), kSpace, FM_ACCESS_RAM);
-                if (unmap) A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 0, nullptr, kSpace, FM_ACCESS_ROM);
+                A.SetMemory(e.h, id, "ADPCM_B", data.data(), (uint32_t)data.size());
+                A.SetMemoryEx(e.h, id, "ADPCM_B", 0, block.data(), kSpace, FM_ACCESS_RAM);
+                if (unmap) A.SetMemoryEx(e.h, id, "ADPCM_B", 0, nullptr, kSpace, FM_ACCESS_ROM);
                 e.write(id, adpcmPlay(0x00));
             });
         };
@@ -715,20 +820,20 @@ void testSetMemoryEx() {
         std::vector<uint8_t> block(kSpace, 0);
         Engine e;
         uint32_t x = e.add("OPL2EX"), opl2 = e.add("OPL2");
-        bool ok = A.SetMemoryEx(e.h, x, FM_MEM_ADPCM_B, 0, block.data(), 4096, FM_ACCESS_RAM) == FM_OK;
+        bool ok = A.SetMemoryEx(e.h, x, "ADPCM_B", 0, block.data(), 4096, FM_ACCESS_RAM) == FM_OK;
         check("SetMemoryEx: overlapping a mapping is rejected",
-              ok && A.SetMemoryEx(e.h, x, FM_MEM_ADPCM_B, 2048, block.data(), 4096, FM_ACCESS_RAM) == FM_ERR_INVALID_ARG);
+              ok && A.SetMemoryEx(e.h, x, "ADPCM_B", 2048, block.data(), 4096, FM_ACCESS_RAM) == FM_ERR_INVALID_ARG);
         check("SetMemoryEx: a mapping next to another is accepted",
-              A.SetMemoryEx(e.h, x, FM_MEM_ADPCM_B, 4096, block.data() + 4096, 4096, FM_ACCESS_RAM) == FM_OK);
+              A.SetMemoryEx(e.h, x, "ADPCM_B", 4096, block.data() + 4096, 4096, FM_ACCESS_RAM) == FM_OK);
         check("SetMemoryEx: size 0, an unknown access or chip_id is rejected",
-              A.SetMemoryEx(e.h, x, FM_MEM_ADPCM_B, 0x20000, block.data(), 0, FM_ACCESS_RAM) == FM_ERR_INVALID_ARG &&
-              A.SetMemoryEx(e.h, x, FM_MEM_ADPCM_B, 0x20000, block.data(), 16, (FmMemoryAccess)2) == FM_ERR_INVALID_ARG &&
-              A.SetMemoryEx(e.h, 99, FM_MEM_ADPCM_B, 0x20000, block.data(), 16, FM_ACCESS_RAM) == FM_ERR_INVALID_ARG);
+              A.SetMemoryEx(e.h, x, "ADPCM_B", 0x20000, block.data(), 0, FM_ACCESS_RAM) == FM_ERR_INVALID_ARG &&
+              A.SetMemoryEx(e.h, x, "ADPCM_B", 0x20000, block.data(), 16, (FmMemoryAccess)2) == FM_ERR_INVALID_ARG &&
+              A.SetMemoryEx(e.h, 99, "ADPCM_B", 0x20000, block.data(), 16, FM_ACCESS_RAM) == FM_ERR_INVALID_ARG);
         check("SetMemoryEx: memory the chip does not have is rejected",
-              A.SetMemoryEx(e.h, x, FM_MEM_ADPCM_B_ROMMODE, 0, block.data(), 16, FM_ACCESS_RAM) == FM_ERR_INVALID_ARG &&
-              A.SetMemoryEx(e.h, opl2, FM_MEM_ADPCM_B, 0, block.data(), 16, FM_ACCESS_RAM) == FM_ERR_INVALID_ARG);
+              A.SetMemoryEx(e.h, x, "ADPCM_B_ROMMODE", 0, block.data(), 16, FM_ACCESS_RAM) == FM_ERR_INVALID_ARG &&
+              A.SetMemoryEx(e.h, opl2, "ADPCM_B", 0, block.data(), 16, FM_ACCESS_RAM) == FM_ERR_INVALID_ARG);
         check("SetMemoryEx: unmapping a range with nothing in it succeeds",
-              A.SetMemoryEx(e.h, x, FM_MEM_ADPCM_B, 0x30000, nullptr, 16, FM_ACCESS_ROM) == FM_OK);
+              A.SetMemoryEx(e.h, x, "ADPCM_B", 0x30000, nullptr, 16, FM_ACCESS_ROM) == FM_OK);
     }
 
     // --- Y8950 (素の emu8950。RAM はメモリ空間 1 つ分を丸ごと渡すときだけ) ---
@@ -736,7 +841,7 @@ void testSetMemoryEx() {
         std::vector<uint8_t> block(kSpace, 0);
         Engine e;
         uint32_t id = e.add("Y8950");
-        bool ok = A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 0, block.data(), kSpace, FM_ACCESS_RAM) == FM_OK;
+        bool ok = A.SetMemoryEx(e.h, id, "ADPCM_B", 0, block.data(), kSpace, FM_ACCESS_RAM) == FM_OK;
         e.write(id, adpcmWrite(data));
         check("SetMemoryEx Y8950: a whole-space RAM block is read and written in place",
               ok && std::equal(data.begin(), data.end(), block.begin()));
@@ -747,8 +852,8 @@ void testSetMemoryEx() {
         std::vector<uint8_t> block(kSpace, 0);
         Engine e;
         uint32_t a = e.add("Y8950"), b = e.add("Y8950");
-        A.SetMemoryEx(e.h, a, FM_MEM_ADPCM_B, 0, block.data(), kSpace, FM_ACCESS_RAM);
-        A.SetMemoryEx(e.h, b, FM_MEM_ADPCM_B, 0, block.data(), kSpace, FM_ACCESS_RAM);
+        A.SetMemoryEx(e.h, a, "ADPCM_B", 0, block.data(), kSpace, FM_ACCESS_RAM);
+        A.SetMemoryEx(e.h, b, "ADPCM_B", 0, block.data(), kSpace, FM_ACCESS_RAM);
         e.write(a, adpcmWrite(data));
         e.write(b, adpcmPlay(0x00));
         check("SetMemoryEx Y8950: two Y8950 share one whole-space RAM block", same(e.render(), refY8950));
@@ -758,8 +863,8 @@ void testSetMemoryEx() {
         Engine e;
         uint32_t id = e.add("Y8950");
         check("SetMemoryEx Y8950: a RAM block that is not the whole space is unavailable",
-              A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 0, block.data(), kSpace / 2, FM_ACCESS_RAM) == FM_ERR_UNAVAILABLE &&
-              A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 4, block.data(), kSpace, FM_ACCESS_RAM) == FM_ERR_UNAVAILABLE);
+              A.SetMemoryEx(e.h, id, "ADPCM_B", 0, block.data(), kSpace / 2, FM_ACCESS_RAM) == FM_ERR_UNAVAILABLE &&
+              A.SetMemoryEx(e.h, id, "ADPCM_B", 4, block.data(), kSpace, FM_ACCESS_RAM) == FM_ERR_UNAVAILABLE);
     }
     {
         // ROM モードのメモリ。ROM モードは 32 バイト単位だが、0 番地から読み終える前に
@@ -771,7 +876,7 @@ void testSetMemoryEx() {
             return play("Y8950", [&](Engine& e, uint32_t id) {
                 uint8_t* p = access == FM_ACCESS_ROM ? rom.data() : block.data();
                 uint32_t n = access == FM_ACCESS_ROM ? (uint32_t)rom.size() : kSpace;
-                A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B_ROMMODE, 0, p, n, access);
+                A.SetMemoryEx(e.h, id, "ADPCM_B_ROMMODE", 0, p, n, access);
                 e.write(id, adpcmPlay(0x01));
             });
         };
@@ -784,9 +889,9 @@ void testSetMemoryEx() {
         std::vector<uint8_t> zeros(kAdpcmBytes, 0);
         auto legacy = [&](bool unmap) {
             return play("Y8950", [&](Engine& e, uint32_t id) {
-                A.SetMemory(e.h, id, FM_MEM_ADPCM_B, data.data(), (uint32_t)data.size());
-                A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 0, zeros.data(), (uint32_t)zeros.size(), FM_ACCESS_ROM);
-                if (unmap) A.SetMemoryEx(e.h, id, FM_MEM_ADPCM_B, 0, nullptr, kSpace, FM_ACCESS_ROM);
+                A.SetMemory(e.h, id, "ADPCM_B", data.data(), (uint32_t)data.size());
+                A.SetMemoryEx(e.h, id, "ADPCM_B", 0, zeros.data(), (uint32_t)zeros.size(), FM_ACCESS_ROM);
+                if (unmap) A.SetMemoryEx(e.h, id, "ADPCM_B", 0, nullptr, kSpace, FM_ACCESS_ROM);
                 e.write(id, adpcmPlay(0x00));
             });
         };
@@ -812,6 +917,7 @@ int main(int argc, char** argv) {
     testOpl2exFm();
     testOpl2exAdpcm();
     testSsgs();
+    testMemoryApi();
     testSetMemoryEx();
 
     std::printf("%s (%d failed)\n", g_fails ? "FAILED" : "PASSED", g_fails);
