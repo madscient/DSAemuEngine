@@ -461,13 +461,13 @@ static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val, uint32_t port) {
 // =========================================================
 //  1サンプル生成 (ステレオ, float)
 // =========================================================
-// emu2413 と src/y8960 のフォークのレート変換器は、補間位置を決める timer を
+// src/y8960 のフォーク (OPL2EX / OPLLEX) のレート変換器は、補間位置を決める timer を
 // 全チャンネルで共有し、getData を呼ぶたびに f_ratio だけ進める。calcStereo は
 // 1 出力サンプルにつき getData を L と R で 2 回呼ぶので、そのままでは L と R が
 // 別々の、どちらも誤った位置で補間される。先に 1 サンプルぶん進めた timer を置き、
 // 呼び出しの間だけ増分を 0 にして、両チャンネルを mono の calc と同じ位置に揃える。
-// emu8950 の calcStereo は R の前に timer を自分で戻す。増分が 0 の間は戻す値が
-// 置いた値と同じなので、ここを通しても出力は変わらない
+// emu2413 と emu8950 の calcStereo は R の前に timer を自分で戻す。増分が 0 の間は
+// 戻す値が置いた値と同じなので、ここを通しても出力は変わらない
 template <typename Chip>
 static void calcStereoAligned(Chip* chip, void (*calcStereo)(Chip*, int32_t*), int32_t buf[2]) {
     auto* conv = chip->conv;
