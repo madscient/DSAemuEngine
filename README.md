@@ -20,7 +20,7 @@ emu8950 / emu2413 / emu2149 を改造したコアで提供します。
 
 | パス | 元にしたコア | Y8960 のブロック | FmEngineApi チップ名 |
 |---|---|---|---|
-| `src/y8960/Y8960Opl2exCore.*`, `Y8960Opl2exAdpcm.*` | emu8950 v1.1.4 | 拡張 OPL2 部 (YM3812 + ADPCM-B) | `OPL2EX` |
+| `src/y8960/Y8960Opl2exCore.*`, `Y8960Opl2exAdpcm.*` | emu8950 v1.1.4 (ADPCM の止まり方は v1.2.2 と同じ) | 拡張 OPL2 部 (YM3812 + ADPCM-B) | `OPL2EX` |
 | `src/y8960/Y8960OpllCore.*` | emu2413 v1.5.9 | 拡張 OPLL 部 (チャンネル別プリセット音色バンク) | `OPLLEX` |
 | `src/y8960/Y8960SsgsCore.*` | emu2149 v1.42 | SSGS (YMZ705 の SSG 部相当。YM2149 × 2 + パンポット) | `SSGS` |
 
@@ -248,6 +248,9 @@ YM3812 に Y8950 の ADPCM-B を足したもので、レジスタ配置は Y8950
   RAM の先頭から書き込みます。256KB を超える部分は捨てられます。
   `0x07` の REC と MEMORY DATA を立てて `0x0F` に書き込む方法でも書けます
 - `0x07` の bit3 (SP-OFF) を立てると ADPCM は無音になります
+- ADPCM の再生が止まると、ADPCM の出力は 0 になります。止まるのは、停止アドレスに
+  届いたとき (REPEAT なし)、`0x07` の bit0 (RESET) を立てたとき、bit7 (START) を
+  立てずに `0x07` に書いたときです。`Y8950` も同じです
 - 実機は 2 回路を持ち、2 回路で 256KB の SRAM を分け合います。2 回路を鳴らすときは
   `OPL2EX` を 2 個追加します。`FmEngine_SetMemory` で書き込むと、各チップが別々に
   持つ 256KB の RAM に入ります。2 個で SRAM を分け合うには、呼び出し側で 256KB の

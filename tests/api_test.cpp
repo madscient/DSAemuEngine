@@ -199,6 +199,19 @@ constexpr double kSilent = 1e-4;
 bool audible(const Out& o) { return rms(o.l) > kSilent && rms(o.r) > kSilent; }
 bool silent(const Out& o) { return rms(o.l) <= kSilent && rms(o.r) <= kSilent; }
 
+bool allZero(const std::vector<float>& v) {
+    for (float s : v) if (s != 0.0f) return false;
+    return true;
+}
+
+// 後半だけを見るのは、レート変換器に残っている止まる前のサンプルが抜けるのを待つため
+bool zeroInSecondHalf(const Out& o) {
+    auto half = [](const std::vector<float>& v) {
+        return std::vector<float>(v.begin() + v.size() / 2, v.end());
+    };
+    return allZero(half(o.l)) && allZero(half(o.r));
+}
+
 // ---------------------------------------------------------
 //  レジスタ列
 // ---------------------------------------------------------
@@ -275,10 +288,11 @@ std::vector<uint8_t> adpcmData(size_t size) {
 constexpr uint32_t kAdpcmBytes = 4096;
 
 // reg08 を書いてから開始・終了アドレスを書き、再生を始める
-// start は 256K RAM モードの番地 (4 バイト単位で数える)
-Regs adpcmPlay(uint8_t reg08, uint32_t start = 0) {
+// start と bytes は 256K RAM モードの番地 (4 バイト単位で数える)。
+// DELTA-N が 8000h なので、既定の bytes は 0.33 秒ぶんで、kFrames では鳴り終わらない
+Regs adpcmPlay(uint8_t reg08, uint32_t start = 0, uint32_t bytes = kAdpcmBytes) {
     const uint32_t from = start / 4;
-    const uint32_t stop = (start + kAdpcmBytes) / 4 - 1;
+    const uint32_t stop = (start + bytes) / 4 - 1;
     return {
         { 0x08, reg08 },
         { 0x09, (uint8_t)(from & 0xFF) }, { 0x0A, (uint8_t)(from >> 8) },
@@ -485,8 +499,10 @@ void testOpllex() {
           bank[0].l == bank[0].r);
 }
 
-// emu2413 / emu8950 のレート変換器は L と R で補間位置がずれる作りなので、
+// emu2413 と src/y8960 のフォークのレート変換器は L と R で補間位置がずれる作りなので、
 // エンジンが揃えていなければ、中央定位のチップでも L と R が食い違う。
+// エンジンの位相合わせが効いていることを見ているのは OPL2EX で、素の emu8950 の
+// 3 チップはコアが自分で揃える。
 // OPLL 系は L と R にメロディとリズムを振り分けているので、この形では見られない
 void testConverterPhase() {
     static const char* chips[] = { "Y8950", "OPL", "OPL2", "OPL2EX" };
@@ -555,6 +571,32 @@ void testOpl2exAdpcm() {
           A.SetMemory(e.h, id, "ADPCM_B", big.data(), (uint32_t)big.size()) == FM_OK);
 }
 
+// ADPCM は再生が止まると 0 を出す。最後に復号した値を出し続けると直流が乗る。
+// 止まり方は 3 つで、停止アドレスに届く場合だけは kFrames のうちに届く短いデータで見る
+void testAdpcmStop() {
+    struct Stop { const char* what; uint32_t bytes; Regs regs; };
+    const Stop stops[] = {
+        { "reaching the stop address", 256,         {} },                 // 約 990 フレーム
+        { "07h b0 (RESET)",            kAdpcmBytes, { { 0x07, 0x01 } } },
+        { "clearing 07h b7 (START)",   kAdpcmBytes, { { 0x07, 0x00 } } },
+    };
+    for (const Stop& s : stops) {
+        std::vector<Out> tails;
+        for (const char* chip : { "Y8950", "OPL2EX" }) {
+            Engine e;
+            uint32_t id = e.add(chip);
+            withAdpcm(adpcmPlay(0x00, 0, s.bytes))(e, id);
+            Out head = e.render(200);
+            e.write(id, s.regs);
+            tails.push_back(e.render());
+            check(std::string(chip) + ": ADPCM puts out zero after " + s.what,
+                  audible(head) && zeroInSecondHalf(tails.back()));
+        }
+        check(std::string("  (and the OPL2EX matches the Y8950 through ") + s.what + ")",
+              same(tails[0], tails[1]));
+    }
+}
+
 // YM2149 1 系統ぶん。base は SSGS では 0x00 (SSG-1) か 0x20 (SSG-2)
 // A: トーン、B: トーン + エンベロープ、C: ノイズ
 Regs ssgNotes(uint8_t base) {
@@ -580,11 +622,6 @@ Regs ssgTone(uint8_t base, int ch) {
 
 Regs ssgPan(uint8_t base, int ch, uint8_t pan) {
     return { { (uint8_t)(base + 0x10 + ch), pan } };
-}
-
-bool allZero(const std::vector<float>& v) {
-    for (float s : v) if (s != 0.0f) return false;
-    return true;
 }
 
 void testSsgs() {
@@ -904,6 +941,7 @@ int main(int argc, char** argv) {
     testConverterPhase();
     testOpl2exFm();
     testOpl2exAdpcm();
+    testAdpcmStop();
     testSsgs();
     testMemoryApi();
     testSetMemoryEx();

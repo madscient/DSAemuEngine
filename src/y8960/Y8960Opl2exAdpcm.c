@@ -4,6 +4,9 @@
 /*
    Forked from emu8950 v1.1.4 (emuadpcm.c) for the Y8960 cartridge, 2026 by madscient.
    See Y8960Opl2exCore.h for what the fork changes and why.
+
+   How playback stops follows emu8950 v1.2.2: the output is 0 while nothing is
+   playing, and a write to 07h without START stops playback.
 */
 #include "Y8960Opl2exAdpcm.h"
 #include <memory.h>
@@ -163,6 +166,9 @@ int16_t Y8960OPL_ADPCM_calc(Y8960OPL_ADPCM *_this) {
   if (_this->reg[0x07] & R07_SP_OFF)
     return 0;
 
+  if (!_this->play_start)
+    return 0;
+
   return calc(_this);
 }
 
@@ -203,6 +209,8 @@ void Y8960OPL_ADPCM_writeReg(Y8960OPL_ADPCM *_this, uint32_t adr, uint32_t data)
       _this->output[1] = 0;
       _this->diff = DDEF;
       _this->status |= STATUS_PCM_BSY; 
+    } else {
+      _this->play_start = 0;
     }
     _this->reg[0x07] = data;
     break;
