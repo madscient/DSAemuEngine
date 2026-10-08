@@ -20,8 +20,8 @@ emu8950 / emu2413 / emu2149 を改造したコアで提供します。
 
 | パス | 元にしたコア | Y8960 のブロック | FmEngineApi チップ名 |
 |---|---|---|---|
-| `src/y8960/Y8960Opl2exCore.*`, `Y8960Opl2exAdpcm.*` | emu8950 v1.1.4 (ADPCM の止まり方は v1.2.2 と同じ) | 拡張 OPL2 部 (YM3812 + ADPCM-B) | `OPL2EX` |
-| `src/y8960/Y8960OpllCore.*` | emu2413 v1.5.9 | 拡張 OPLL 部 (チャンネル別プリセット音色バンク) | `OPLLEX` |
+| `src/y8960/Y8960Opl2exCore.*`, `Y8960Opl2exAdpcm.*` | emu8950 v1.1.4 (ADPCM の止まり方とステレオ出力のレート変換は v1.2.2 と同じ) | 拡張 OPL2 部 (YM3812 + ADPCM-B) | `OPL2EX` |
+| `src/y8960/Y8960OpllCore.*` | emu2413 v1.5.9 (ステレオ出力のレート変換は v1.6.3 と同じ) | 拡張 OPLL 部 (チャンネル別プリセット音色バンク) | `OPLLEX` |
 | `src/y8960/Y8960SsgsCore.*` | emu2149 v1.42 | SSGS (YMZ705 の SSG 部相当。YM2149 × 2 + パンポット) | `SSGS` |
 
 `extern/` の submodule は改造せず、そのまま `SSG` / `OPL2` / `Y8950` / `OPLL` などに使います。

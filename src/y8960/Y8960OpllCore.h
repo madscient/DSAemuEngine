@@ -8,6 +8,9 @@
    linked into the same binary for the plain OPLL chips.
 
    The preset tables are NOT Okazaki's; see the comment above the tables.
+
+   One fix of emu2413 v1.6.3 is carried over: Y8960OPLL_calcStereo resamples
+   L and R at the same position.
 */
 #ifndef _Y8960_OPLL_CORE_H_
 #define _Y8960_OPLL_CORE_H_

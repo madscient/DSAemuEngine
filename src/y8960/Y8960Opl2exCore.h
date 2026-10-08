@@ -12,6 +12,10 @@
    sample memory is a list of blocks handed in from outside
    (Y8960OPL_setADPCMMemoryMap), because the cartridge's two circuits divide
    one 256KB SRAM between them.
+
+   Two fixes of emu8950 v1.2.2 are carried over: Y8960OPL_calcStereo resamples
+   L and R at the same position, and the ADPCM stops the way v1.2.2 does (see
+   Y8960Opl2exAdpcm.c).
 */
 #ifndef _Y8960_OPL2EX_CORE_H_
 #define _Y8960_OPL2EX_CORE_H_

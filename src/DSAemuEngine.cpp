@@ -20,7 +20,6 @@
 
 #include <cstdlib>
 #include <cstring>
-#include <cmath>
 #include <string>
 #include <vector>
 #include <memory>
@@ -461,28 +460,6 @@ static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val, uint32_t port) {
 // =========================================================
 //  1サンプル生成 (ステレオ, float)
 // =========================================================
-// src/y8960 のフォーク (OPL2EX / OPLLEX) のレート変換器は、補間位置を決める timer を
-// 全チャンネルで共有し、getData を呼ぶたびに f_ratio だけ進める。calcStereo は
-// 1 出力サンプルにつき getData を L と R で 2 回呼ぶので、そのままでは L と R が
-// 別々の、どちらも誤った位置で補間される。先に 1 サンプルぶん進めた timer を置き、
-// 呼び出しの間だけ増分を 0 にして、両チャンネルを mono の calc と同じ位置に揃える。
-// emu2413 と emu8950 の calcStereo は R の前に timer を自分で戻す。増分が 0 の間は
-// 戻す値が置いた値と同じなので、ここを通しても出力は変わらない
-template <typename Chip>
-static void calcStereoAligned(Chip* chip, void (*calcStereo)(Chip*, int32_t*), int32_t buf[2]) {
-    auto* conv = chip->conv;
-    if (!conv) {
-        calcStereo(chip, buf);
-        return;
-    }
-    const double ratio = conv->f_ratio;
-    const double t = conv->timer + ratio;
-    conv->timer = t - std::floor(t);
-    conv->f_ratio = 0.0;
-    calcStereo(chip, buf);
-    conv->f_ratio = ratio;
-}
-
 // buf はメロディとリズムの 2 系統 (routeOpllParts で振り分けたもの)
 static void mixOpllParts(const ChipEntry& c, const int32_t buf[2], float& out_l, float& out_r) {
     const float melody = (float)buf[0];
@@ -505,20 +482,20 @@ static void chipCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
     case ChipKind::OPLLP:
     case ChipKind::OPLLX:
     case ChipKind::VRC7:
-        calcStereoAligned(c.opll, OPLL_calcStereo, buf);
+        OPLL_calcStereo(c.opll, buf);
         mixOpllParts(c, buf, out_l, out_r);
         return;
     case ChipKind::OPLLEX:
-        calcStereoAligned(c.opllex, Y8960OPLL_calcStereo, buf);
+        Y8960OPLL_calcStereo(c.opllex, buf);
         mixOpllParts(c, buf, out_l, out_r);
         return;
     case ChipKind::Y8950:
     case ChipKind::OPL:
     case ChipKind::OPL2:
-        calcStereoAligned(c.opl, OPL_calcStereo, buf);
+        OPL_calcStereo(c.opl, buf);
         break;
     case ChipKind::OPL2EX:
-        calcStereoAligned(c.opl2ex, Y8960OPL_calcStereo, buf);
+        Y8960OPL_calcStereo(c.opl2ex, buf);
         break;
     case ChipKind::SCC:
     case ChipKind::SCCP: {

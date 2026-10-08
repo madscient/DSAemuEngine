@@ -499,11 +499,10 @@ void testOpllex() {
           bank[0].l == bank[0].r);
 }
 
-// src/y8960 のフォーク (OPL2EX / OPLLEX) のレート変換器は L と R で補間位置がずれる
-// 作りなので、エンジンが揃えていなければ、中央定位のチップでも L と R が食い違う。
-// エンジンの位相合わせが効いていることを見ているのは OPL2EX で、素の emu8950 の
-// 3 チップはコアが自分で揃える。
-// OPLL 系は L と R にメロディとリズムを振り分けているので、この形では見られない
+// レート変換器は補間位置を全チャンネルで共有している。calcStereo が L と R を同じ
+// 位置で取っていなければ、中央定位のチップでも L と R が食い違う。
+// OPLL 系は L と R にメロディとリズムを振り分けているので、この形では見られない。
+// OPLLEX は、素の OPLL と一致することで見ている (testOpllex のユーザー音色)
 void testConverterPhase() {
     static const char* chips[] = { "Y8950", "OPL", "OPL2", "OPL2EX" };
     for (const char* chip : chips) {

@@ -1163,7 +1163,9 @@ void Y8960OPL_calcStereo(Y8960OPL *opl, int32_t out[2]) {
   }
   opl->out_time -= opl->out_step;
   if (opl->conv) {
+    double timer = opl->conv->timer;
     out[0] = Y8960OPL_RateConv_getData(opl->conv, 0);
+    opl->conv->timer = timer;
     out[1] = Y8960OPL_RateConv_getData(opl->conv, 1);
   } else {
     out[0] = opl->mix_out[0];
