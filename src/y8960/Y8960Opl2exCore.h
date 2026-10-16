@@ -13,9 +13,11 @@
    (Y8960OPL_setADPCMMemoryMap), because the cartridge's two circuits divide
    one 256KB SRAM between them.
 
-   Two fixes of emu8950 v1.2.2 are carried over: Y8960OPL_calcStereo resamples
-   L and R at the same position, and the ADPCM stops the way v1.2.2 does (see
-   Y8960Opl2exAdpcm.c).
+   Carried over from later emu8950 releases: the ADPCM stops the way v1.2.2
+   does (see Y8960Opl2exAdpcm.c), and the rate converter, the output timing and
+   the 4.12 fixed-point pan_fine are those of v1.2.3. The converter takes L and
+   R at the same position, so it also covers the Y8960OPL_calcStereo fix of
+   v1.2.2. The save state functions of v1.2.x are not carried over.
 */
 #ifndef _Y8960_OPL2EX_CORE_H_
 #define _Y8960_OPL2EX_CORE_H_
@@ -47,10 +49,12 @@ typedef struct __Y8960OPL_PATCH {
 /* rate conveter */
 typedef struct __Y8960OPL_RateConv {
   int ch;
-  double timer;
+  uint32_t timer; /* fractional phase of the output in 0.32 fixed point */
+  uint32_t timer_step; /* fractional part of f_ratio in 0.32 fixed point */
   double f_ratio;
   int16_t *sinc_table;
-  int16_t **buf;
+  int16_t **buf; /* ring buffer of LW samples per channel, stored twice so that the latest LW samples are contiguous */
+  int *pos;
 } Y8960OPL_RateConv;
 
 Y8960OPL_RateConv *Y8960OPL_RateConv_new(double f_inp, double f_out, int ch);
@@ -112,9 +116,13 @@ typedef struct __Y8960OPL {
   uint8_t csm_key_count;
   uint8_t notesel;
 
+  /* in units of 1/(clk * rate) sec, so that all steps are integers */
   uint32_t inp_step;
   uint32_t out_step;
   uint32_t out_time;
+  /* inp_recip = ceil(2^inp_shift / inp_step), to get the rate converter phase without division */
+  uint32_t inp_recip;
+  uint32_t inp_shift;
 
   uint8_t reg[0x100];
   uint8_t test_flag;
@@ -137,7 +145,7 @@ typedef struct __Y8960OPL {
   uint8_t ch_alg[9]; // alg for each channels
 
   uint8_t pan[16];
-  float pan_fine[16][2];
+  int32_t pan_fine[16][2]; /* 4.12 fixed point */
 
   uint32_t mask;
   uint8_t am_mode;
