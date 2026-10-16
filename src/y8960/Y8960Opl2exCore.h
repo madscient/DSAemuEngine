@@ -8,7 +8,8 @@
    symbol is renamed with a Y8960 prefix because the unmodified emu8950 is
    linked into the same binary for the Y8950 / OPL / OPL2 chips.
 
-   The ADPCM has no sample ROM, so bit 0 of register 08h is ignored, and its
+   The ADPCM has no sample ROM, so bit 0 of register 08h is ignored, and no
+   SP-OFF, so bit 3 of register 07h is ignored too. Its
    sample memory is a list of blocks handed in from outside
    (Y8960OPL_setADPCMMemoryMap), because the cartridge's two circuits divide
    one 256KB SRAM between them.

@@ -22,6 +22,7 @@
    The preset tables are NOT Okazaki's; see the comment above the tables.
 */
 #include "Y8960OpllCore.h"
+#include "Y8960Pan.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -698,6 +699,23 @@ static INLINE void set_patch_bank(Y8960OPLL *opll, int32_t ch, uint8_t bank) {
   set_patch(opll, ch, opll->patch_number[ch]);
 }
 
+/* Outputs that take each channel's position: ch6 also drives BD, ch7 HH and
+** SD, ch8 TOM and CYM (the ch_out indices of the rhythm sounds). */
+static const int8_t pan_outputs[9][3] = {
+    {0, -1, -1}, {1, -1, -1}, {2, -1, -1}, {3, -1, -1}, {4, -1, -1},
+    {5, -1, -1}, {6, 9, -1},  {7, 10, 11}, {8, 12, 13},
+};
+
+static void set_channel_pan(Y8960OPLL *opll, int32_t ch, uint8_t pan) {
+  double gain[2];
+  int i;
+  Y8960_panGain(pan, gain);
+  for (i = 0; i < 3 && pan_outputs[ch][i] >= 0; i++) {
+    opll->pan_fine[pan_outputs[ch][i]][0] = (int32_t)floor(gain[0] * 4096.0 + 0.5);
+    opll->pan_fine[pan_outputs[ch][i]][1] = (int32_t)floor(gain[1] * 4096.0 + 0.5);
+  }
+}
+
 static INLINE void set_sus_flag(Y8960OPLL *opll, int ch, int flag) {
   CAR(opll, ch)->sus_flag = flag;
   request_update(CAR(opll, ch), UPDATE_EG);
@@ -1240,6 +1258,8 @@ void Y8960OPLL_reset(Y8960OPLL *opll) {
     opll->pan[i] = 3;
     opll->pan_fine[i][1] = opll->pan_fine[i][0] = 4096;
   }
+  for (i = 0; i < 9; i++)
+    Y8960OPLL_writeReg(opll, Y8960OPLL_PAN_REG_BASE + i, Y8960_PAN_CENTER);
 
   for (i = 0; i < 14; i++) {
     opll->ch_out[i] = 0;
@@ -1449,6 +1469,18 @@ void Y8960OPLL_writeReg(Y8960OPLL *opll, uint32_t reg, uint8_t data) {
   case 0x47:
   case 0x48:
     set_patch_bank(opll, reg - Y8960OPLL_BANK_REG_BASE, data & 3);
+    break;
+
+  case 0x50:
+  case 0x51:
+  case 0x52:
+  case 0x53:
+  case 0x54:
+  case 0x55:
+  case 0x56:
+  case 0x57:
+  case 0x58:
+    set_channel_pan(opll, reg - Y8960OPLL_PAN_REG_BASE, data);
     break;
 
   default:

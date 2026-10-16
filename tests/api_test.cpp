@@ -120,8 +120,10 @@ void check(const std::string& what, bool ok) {
 // ---------------------------------------------------------
 constexpr uint32_t kRate = 48000;
 constexpr uint32_t kFrames = 4800;  // 0.1 秒
-// クロックを指定しない試験でチップに渡す値。SSGS ではマスタークロックになる
+// クロックを指定しない試験でチップに渡す値
 constexpr uint32_t kClock = 3579545;
+// Y8960 が SSGS に配るクロック
+constexpr uint32_t kSsgClock = 1789772;
 
 struct Reg { uint8_t reg, val; };
 using Regs = std::vector<Reg>;
@@ -483,26 +485,90 @@ void testOpllex() {
     check("OPLLEX: writing the bank register re-points a channel already playing",
           maxDiff(playing.l, untouched.l) > kSilent);
 
-    // ユーザー音色はバンクに属さず、素の OPLL と同じ音になる
+    // ユーザー音色はバンクに属さない。素の OPLL との突き合わせは testOpllexPan
     Out user0 = play("OPLLEX", concat({ opllUserVoice(), { { 0x40, 0 } }, opllNote(0, 0) }));
     Out user3 = play("OPLLEX", concat({ opllUserVoice(), { { 0x40, 3 } }, opllNote(0, 0) }));
-    Out opll  = play("OPLL",   concat({ opllUserVoice(), opllNote(0, 0) }));
     check("OPLLEX: the user voice does not change with the bank", audible(user0) && same(user0, user3));
-    check("OPLLEX: the user voice sounds exactly as on the plain OPLL", same(user0, opll));
 
     Regs junk;
-    for (int r = 0x49; r < 0x100; ++r) junk.push_back({ (uint8_t)r, 0xFF });
-    check("OPLLEX: registers past 48h change nothing",
+    for (int r = 0x49; r < 0x50; ++r) junk.push_back({ (uint8_t)r, 0xFF });
+    for (int r = 0x59; r < 0x100; ++r) junk.push_back({ (uint8_t)r, 0xFF });
+    check("OPLLEX: registers 49h-4Fh and past 58h change nothing",
           same(play("OPLLEX", concat({ junk, { { 0x40, 1 } }, opllNote(0, 1) })), bank[1]));
+}
 
-    check("OPLLEX: has no parts, so its output stays mono (L == R)",
-          bank[0].l == bank[0].r);
+// Y8960 の 8bit の定位 (1 が左端、128 が中央、255 が右端) を等パワーの則で
+// 振ったときの、右と左の比
+double panTan(uint8_t pan) {
+    return std::tan((pan - 1) / 254.0 * 1.57079632679489661923);
+}
+
+// 中央の倍率 cos(pi/4)
+constexpr double kCentreGain = 0.70710678118654752;
+
+Regs opllexPan(int ch, uint8_t pan) {
+    return { { (uint8_t)(0x50 + ch), pan } };
+}
+
+// リズムモードで keys (0Eh の下位 5 ビット) の音だけを鳴らす
+Regs opllRhythmKeys(uint8_t keys) {
+    Regs r = opllRhythm();
+    r.back().val = (uint8_t)(0x20 | keys);
+    return r;
+}
+
+void testOpllexPan() {
+    const Regs note = concat({ opllUserVoice(), opllNote(0, 0) });
+    Out center = play("OPLLEX", note);
+    auto panned = [&](uint8_t pan) { return play("OPLLEX", concat({ opllexPan(0, pan), note })); };
+    Out left = panned(1), right = panned(255);
+    check("OPLLEX: a channel sounds on both sides alike until 50h-58h are written",
+          audible(center) && center.l == center.r);
+    check("OPLLEX: pan 128 is the centre, and so is the undefined 0",
+          same(panned(128), center) && same(panned(0), center));
+    // 左端の倍率はちょうど 1 なので、素の OPLL の出力そのものになる。
+    // 素の OPLL はコアが L と R を同じ位相で取るので、レート変換の位相もここで見ている
+    Out opll = play("OPLL", note);
+    check("OPLLEX: pan 1 is hard left, exactly the plain OPLL's output",
+          left.l == opll.l && allZero(left.r));
+    check("OPLLEX: pan 255 is hard right", right.r == left.l && allZero(right.l));
+    check("OPLLEX: the centre is equal power (cos 45 degrees each side)",
+          std::fabs(rms(center.l) / rms(left.l) - kCentreGain) < 0.01);
+    Out p64 = panned(64);
+    check("OPLLEX: pan 64 leans left by the equal power law",
+          std::fabs(rms(p64.r) / rms(p64.l) - panTan(64)) < 0.01 &&
+          std::fabs((rms(p64.l) * rms(p64.l) + rms(p64.r) * rms(p64.r)) /
+                    (rms(left.l) * rms(left.l)) - 1.0) < 0.02);
+
+    Out ch0Left  = play("OPLLEX", concat({ opllexPan(0, 1), opllNote(0, 1) }));
+    Out ch1Right = play("OPLLEX", concat({ opllexPan(1, 255), opllNote(1, 2) }));
+    Out apart    = play("OPLLEX", concat({ opllexPan(0, 1), opllexPan(1, 255),
+                                          opllNote(0, 1), opllNote(1, 2) }));
+    check("OPLLEX: each channel has its own position",
+          apart.l == ch0Left.l && apart.r == ch1Right.r);
+
+    // リズムの音は、使うスロットのチャンネルの定位に従う
+    struct Drums { int ch; uint8_t keys; const char* what; };
+    const Drums drums[] = {
+        { 6, 0x10, "56h places BD" },
+        { 7, 0x09, "57h places HH and SD" },
+        { 8, 0x06, "58h places TOM and CYM" },
+    };
+    for (const Drums& d : drums) {
+        Regs pans;
+        for (int ch = 6; ch < 9; ++ch)
+            pans.push_back({ (uint8_t)(0x50 + ch), (uint8_t)(ch == d.ch ? 1 : 255) });
+        Out all  = play("OPLLEX", concat({ pans, opllRhythmKeys(0x1F) }));
+        Out only = play("OPLLEX", concat({ opllexPan(6, 1), opllexPan(7, 1), opllexPan(8, 1),
+                                           opllRhythmKeys(d.keys) }));
+        check(std::string("OPLLEX: ") + d.what, rms(only.l) > kSilent && all.l == only.l);
+    }
 }
 
 // レート変換器は補間位置を全チャンネルで共有している。calcStereo が L と R を同じ
 // 位置で取っていなければ、中央定位のチップでも L と R が食い違う。
 // OPLL 系は L と R にメロディとリズムを振り分けているので、この形では見られない。
-// OPLLEX は、素の OPLL と一致することで見ている (testOpllex のユーザー音色)
+// OPLLEX は、左端に置いた音が素の OPLL と一致することで見ている (testOpllexPan)
 void testConverterPhase() {
     static const char* chips[] = { "Y8950", "OPL", "OPL2", "OPL2EX" };
     for (const char* chip : chips) {
@@ -549,8 +615,21 @@ void testOpl2exAdpcm() {
     check("OPL2EX: sample RAM written through 0Fh plays like SetMemory",
           same(play("OPL2EX", byRegisters), opl2ex));
 
-    check("OPL2EX: 07h b3 (SP-OFF) mutes the ADPCM, as on the Y8950",
-          silent(play("OPL2EX", withAdpcm(concat({ adpcmPlay(0x00), { { 0x07, 0x88 } } })))));
+    // 07h を START だけで書き直したときと同じ出力になる
+    const Regs spOff = concat({ adpcmPlay(0x00), { { 0x07, 0x88 } } });
+    Out spOffEx = play("OPL2EX", withAdpcm(spOff));
+    check("OPL2EX: 07h b3 (SP-OFF) is ignored",
+          audible(spOffEx) &&
+          same(spOffEx, play("OPL2EX", withAdpcm(concat({ adpcmPlay(0x00), { { 0x07, 0x80 } } })))));
+    check("  (on the Y8950 the same bit mutes the ADPCM)", silent(play("Y8950", withAdpcm(spOff))));
+
+    // Y8960 の仕様で廃止されたレジスタ: キーボード、プリスケール、DA / AD、I/O、PCM。
+    // 書く値は、試験が 12h (EG-CTRL) と 10h (DELTA-N) に書く値と違うものにする
+    Regs abolished;
+    for (int r : { 0x05, 0x06, 0x0D, 0x0E, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A })
+        abolished.push_back({ (uint8_t)r, 0x40 });
+    check("OPL2EX: the abolished registers change nothing",
+          same(play("OPL2EX", withAdpcm(concat({ adpcmPlay(0x00), abolished }))), opl2ex));
 
     // 空の RAM も直流を積み上げるので、データを入れずに鳴らしたものと比べる
     Out empty = play("OPL2EX", withAdpcm(adpcmPlay(0x00), false));
@@ -596,7 +675,7 @@ void testAdpcmStop() {
     }
 }
 
-// YM2149 1 系統ぶん。base は SSGS では 0x00 (SSG-1) か 0x20 (SSG-2)
+// YM2149 1 系統ぶん。base は SSGS では 0x00 (SSG-1) か 0x10 (SSG-2)
 // A: トーン、B: トーン + エンベロープ、C: ノイズ
 Regs ssgNotes(uint8_t base) {
     auto r = [base](uint8_t reg, uint8_t val) { return Reg{ (uint8_t)(base + reg), val }; };
@@ -619,75 +698,110 @@ Regs ssgTone(uint8_t base, int ch) {
     };
 }
 
-Regs ssgPan(uint8_t base, int ch, uint8_t pan) {
-    return { { (uint8_t)(base + 0x10 + ch), pan } };
+// unit は 0 が SSG-1、1 が SSG-2
+Regs ssgVolume(int unit, int ch, uint8_t volume) {
+    return { { (uint8_t)(0x20 + unit * 4 + ch), volume } };
+}
+
+Regs ssgPan(int unit, int ch, uint8_t pan) {
+    return { { (uint8_t)(0x28 + unit * 4 + ch), pan } };
+}
+
+// 左端の倍率はちょうど 1 なので、L が素の SSG の出力そのものになる
+Regs ssgHardLeft(int unit) {
+    return concat({ ssgPan(unit, 0, 1), ssgPan(unit, 1, 1), ssgPan(unit, 2, 1) });
 }
 
 void testSsgs() {
-    // SSGS の clock はマスタークロックで、SSG は 5.12MHz 未満ならその 1/2 で動く
-    Out ssg1 = play("SSGS", ssgNotes(0x00));
-    Out ssg  = play("SSG", 3579545 / 2, ssgNotes(0x00));
-    check("SSGS: SSG-1 sounds exactly as the plain SSG at half the clock",
-          audible(ssg1) && same(ssg1, ssg));
-    check("SSGS: SSG-2 (20h-3Fh) sounds exactly the same",
-          same(play("SSGS", ssgNotes(0x20)), ssg));
-    check("SSGS: from 5.12MHz up the SSG runs at a third of the clock",
-          same(play("SSGS", 6144000, ssgNotes(0x00)), play("SSG", 2048000, ssgNotes(0x00))));
+    Out ssg  = play("SSG", kSsgClock, ssgNotes(0x00));
+    Out ssg1 = play("SSGS", kSsgClock, concat({ ssgHardLeft(0), ssgNotes(0x00) }));
+    check("SSGS: SSG-1 hard left sounds exactly as the plain SSG",
+          audible(ssg) && ssg1.l == ssg.l && allZero(ssg1.r));
+    check("SSGS: SSG-2 (10h-1Fh, positions 2Ch-2Eh) sounds exactly the same",
+          same(play("SSGS", kSsgClock, concat({ ssgHardLeft(1), ssgNotes(0x10) })), ssg1));
+    // 6144000 は、YMZ705 のように分周する (5.12MHz 以上で 1/3) と食い違う値
+    check("SSGS: clock is the SSG's own clock, not divided",
+          play("SSGS", 6144000, concat({ ssgHardLeft(0), ssgNotes(0x00) })).l ==
+          play("SSG", 6144000, ssgNotes(0x00)).l);
     check("SSGS: a silent chip puts out exactly zero", [] {
         Out o = play("SSGS", Regs{});
         return allZero(o.l) && allZero(o.r);
     }());
 
-    // パンポット。center は書かなかったときの出力
+    // 定位。center は書かなかったときの出力
     Out center = play("SSGS", ssgTone(0x00, 0));
     auto panned = [](uint8_t pan) {
-        return play("SSGS", concat({ ssgPan(0x00, 0, pan), ssgTone(0x00, 0) }));
+        return play("SSGS", concat({ ssgPan(0, 0, pan), ssgTone(0x00, 0) }));
     };
-    check("SSGS: a channel sounds on both sides until a pot is written",
+    Out left = panned(1), right = panned(255);
+    check("SSGS: a channel sounds on both sides alike until a position is written",
           audible(center) && center.l == center.r);
-    check("SSGS: pan 8 is the centre", same(panned(8), center));
-    Out p0 = panned(0), p1 = panned(1), p14 = panned(14), p15 = panned(15);
-    check("SSGS: pan 0 sounds on the left only, at full level", p0.l == center.l && allZero(p0.r));
-    check("SSGS: pan 1 is hard left as well", p1.l == center.l && allZero(p1.r));
-    check("SSGS: pan 15 sounds on the right only, at full level", p15.r == center.r && allZero(p15.l));
-    check("SSGS: pan 14 is not hard right", p14.r == center.r && rms(p14.l) > kSilent);
-    // 片側は全開のまま、反対側が線形に絞られる。4 は (4-1)/7、11 は (15-11)/7
-    Out p4 = panned(4), p11 = panned(11);
-    check("SSGS: pan 4 turns the right side down to 3/7",
-          p4.l == center.l && std::fabs(rms(p4.r) / rms(p4.l) - 3.0 / 7) < 0.01);
-    check("SSGS: pan 11 turns the left side down to 4/7",
-          p11.r == center.r && std::fabs(rms(p11.l) / rms(p11.r) - 4.0 / 7) < 0.01);
-    check("SSGS: the upper bits of a pan register are ignored", same(panned(0xF0), p0));
+    check("SSGS: pan 128 is the centre, and so is the undefined 0",
+          same(panned(128), center) && same(panned(0), center));
+    check("SSGS: pan 1 is hard left", rms(left.l) > kSilent && allZero(left.r));
+    check("SSGS: pan 255 is hard right", right.r == left.l && allZero(right.l));
+    check("SSGS: the centre is equal power (cos 45 degrees each side)",
+          std::fabs(rms(center.l) / rms(left.l) - kCentreGain) < 0.01);
+    Out p64 = panned(64), p192 = panned(192);
+    check("SSGS: pan 64 leans left by the equal power law",
+          std::fabs(rms(p64.r) / rms(p64.l) - panTan(64)) < 0.01 &&
+          std::fabs((rms(p64.l) * rms(p64.l) + rms(p64.r) * rms(p64.r)) /
+                    (rms(left.l) * rms(left.l)) - 1.0) < 0.02);
+    check("SSGS: pan 192 leans right by the equal power law",
+          std::fabs(rms(p192.r) / rms(p192.l) - panTan(192)) < 0.01);
+
+    // 音量
+    auto volume = [](uint8_t v) {
+        return play("SSGS", concat({ ssgVolume(0, 0, v), ssgTone(0x00, 0) }));
+    };
+    check("SSGS: volume 128 is the default", same(volume(128), center));
+    check("SSGS: volume 0 silences the channel", [&] {
+        Out o = volume(0);
+        return allZero(o.l) && allZero(o.r);
+    }());
+    check("SSGS: volume 64 halves the level",
+          std::fabs(rms(volume(64).l) / rms(center.l) - 0.5) < 0.01);
+    check("SSGS: volumes above 128 are held at 128",
+          same(volume(129), center) && same(volume(255), center));
 
     // チャンネルごと、系統ごとに独立している
-    Out aLeft  = play("SSGS", concat({ ssgPan(0x00, 0, 0), ssgTone(0x00, 0) }));
-    Out bRight = play("SSGS", concat({ ssgPan(0x00, 1, 15), ssgTone(0x00, 1) }));
-    Out both   = play("SSGS", concat({ ssgPan(0x00, 0, 0), ssgPan(0x00, 1, 15), ssgTone(0x00, 0),
+    Out aLeft  = play("SSGS", concat({ ssgPan(0, 0, 1), ssgTone(0x00, 0) }));
+    Out bRight = play("SSGS", concat({ ssgPan(0, 1, 255), ssgTone(0x00, 1) }));
+    Out both   = play("SSGS", concat({ ssgPan(0, 0, 1), ssgPan(0, 1, 255), ssgTone(0x00, 0),
                                        ssgTone(0x00, 1), { { 0x07, 0x3C } } }));
-    check("SSGS: each channel of a unit has its own pot",
+    check("SSGS: each channel of a unit has its own position",
           both.l == aLeft.l && both.r == bRight.r);
+    Out bOnly = play("SSGS", ssgTone(0x00, 1));
+    check("SSGS: each channel of a unit has its own volume",
+          same(play("SSGS", concat({ ssgVolume(0, 0, 0), ssgTone(0x00, 0),
+                                     ssgTone(0x00, 1), { { 0x07, 0x3C } } })), bOnly));
+    Out unit2 = play("SSGS", ssgTone(0x10, 0));
+    check("SSGS: the volumes of SSG-1 (20h-22h) and SSG-2 (24h-26h) are separate",
+          audible(unit2) &&
+          same(play("SSGS", concat({ ssgVolume(0, 0, 0), ssgTone(0x10, 0) })), unit2) &&
+          silent(play("SSGS", concat({ ssgVolume(1, 0, 0), ssgTone(0x10, 0) }))));
     // 2 系統は足し合わされるだけなので、同時に鳴らした出力は別々に鳴らした和になる
     Out unit1Only = play("SSGS", ssgNotes(0x00));
-    Out unit2Only = play("SSGS", ssgTone(0x20, 1));
-    Out together  = play("SSGS", concat({ ssgNotes(0x00), ssgTone(0x20, 1) }));
+    Out unit2Only = play("SSGS", ssgTone(0x10, 1));
+    Out together  = play("SSGS", concat({ ssgNotes(0x00), ssgTone(0x10, 1) }));
     double d = 0.0;
     for (size_t i = 0; i < together.l.size(); ++i)
         d = std::fmax(d, std::fabs((double)together.l[i] - ((double)unit1Only.l[i] + unit2Only.l[i])));
     check("SSGS: SSG-1 and SSG-2 are separate units that sound together",
           audible(unit2Only) && d < 1e-6);
-    Out unit2Right = play("SSGS", concat({ ssgPan(0x20, 0, 15), ssgTone(0x20, 0) }));
-    Out units = play("SSGS", concat({ ssgPan(0x00, 0, 0), ssgTone(0x00, 0),
-                                      ssgPan(0x20, 0, 15), ssgTone(0x20, 0) }));
+    Out unit2Right = play("SSGS", concat({ ssgPan(1, 0, 255), ssgTone(0x10, 0) }));
+    Out units = play("SSGS", concat({ ssgPan(0, 0, 1), ssgTone(0x00, 0),
+                                      ssgPan(1, 0, 255), ssgTone(0x10, 0) }));
     check("SSGS: the two units sit on opposite sides at once",
           units.l == aLeft.l && units.r == unit2Right.r);
 
-    // 持たないレジスタ: I/O ポート (0Eh/0Fh)、LED (2Fh)、13h-1Fh、33h-3Fh、40h 以降
+    // 未接続: GPIO (0Eh/0Fh、1Eh/1Fh。1Fh の下位 4bit は基板の LED)、
+    // 20h-2Fh の 4 個ずつの組の 4 個目、30h 以降
     Regs junk;
-    for (int r : { 0x0E, 0x0F, 0x2E, 0x2F }) junk.push_back({ (uint8_t)r, 0xFF });
-    for (int r = 0x13; r < 0x20; ++r) junk.push_back({ (uint8_t)r, 0xFF });
-    for (int r = 0x33; r < 0x100; ++r) junk.push_back({ (uint8_t)r, 0xFF });
+    for (int r : { 0x0E, 0x0F, 0x1E, 0x1F, 0x23, 0x27, 0x2B, 0x2F }) junk.push_back({ (uint8_t)r, 0xFF });
+    for (int r = 0x30; r < 0x100; ++r) junk.push_back({ (uint8_t)r, 0xFF });
     check("SSGS: registers it does not have change nothing",
-          same(play("SSGS", concat({ junk, ssgNotes(0x00) })), ssg1));
+          same(play("SSGS", concat({ junk, ssgNotes(0x00) })), unit1Only));
 }
 
 // 07h の REC と MEMORY DATA を立て、0Fh からサンプルを書き込む
@@ -937,6 +1051,7 @@ int main(int argc, char** argv) {
     testPartApi();
     testOpllParts();
     testOpllex();
+    testOpllexPan();
     testConverterPhase();
     testOpl2exFm();
     testOpl2exAdpcm();

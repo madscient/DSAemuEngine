@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "Y8960SsgsCore.h"
+#include "Y8960Pan.h"
 
 static uint32_t voltbl[2][32] = {
   /* YM2149 - 32 steps */
@@ -39,48 +40,48 @@ static const uint8_t regmsk[16] = {
 
 #define GETA_BITS 24
 
-#define PAN_CENTER 8
-#define PAN_MAX 15
+#define VOLUME_MAX 128
 
-/* No datasheet maps the panpot value to left/right levels, so this takes the
- * YMZ280B's, as the other Y8960 and YMZ705 emulations do: both sides full at
- * the centre, and away from it only the far side is turned down, linearly.
- * The two sides do not get the same number of steps: 0 and 1 are both hard
- * left, while only 15 is hard right. */
+/* The channel volume (0-128) and the stereo position scale the channel
+ * together; volumes above 128 are out of the specification's range and are
+ * held at 128. */
 static void
-set_pan (Y8960SSG * psg, int ch, uint32_t val)
+update_gain (Y8960SSG * psg, int ch)
 {
-  uint8_t pan = (uint8_t)(val & PAN_MAX);
-  float *gain = psg->pan_gain[ch];
+  double pan[2];
+  double volume = (double)psg->ch_volume[ch] / VOLUME_MAX;
 
-  psg->pan[ch] = pan;
-  psg->reg[0x10 + ch] = pan;
-
-  if (pan == PAN_CENTER)
-  {
-    gain[0] = 1.0f;
-    gain[1] = 1.0f;
-  }
-  else if (pan < PAN_CENTER)
-  {
-    gain[0] = 1.0f;
-    gain[1] = (pan == 0) ? 0.0f : (float)(pan - 1) / (float)(PAN_CENTER - 1);
-  }
-  else
-  {
-    gain[0] = (float)(PAN_MAX - pan) / (float)(PAN_MAX - PAN_CENTER);
-    gain[1] = 1.0f;
-  }
+  Y8960_panGain (psg->pan[ch], pan);
+  psg->ch_gain[ch][0] = (float)(volume * pan[0]);
+  psg->ch_gain[ch][1] = (float)(volume * pan[1]);
 }
 
-/* The centre, not hard left: software written for a plain PSG never touches
- * the panpot and has to sound on both sides. */
+void
+Y8960SSG_setChannelVolume (Y8960SSG * psg, uint32_t ch, uint8_t volume)
+{
+  if (ch > 2) return;
+  psg->ch_volume[ch] = volume > VOLUME_MAX ? VOLUME_MAX : volume;
+  update_gain (psg, ch);
+}
+
+void
+Y8960SSG_setChannelPan (Y8960SSG * psg, uint32_t ch, uint8_t pan)
+{
+  if (ch > 2) return;
+  psg->pan[ch] = pan;
+  update_gain (psg, ch);
+}
+
 static void
-reset_pan (Y8960SSG * psg)
+reset_mixer (Y8960SSG * psg)
 {
   int i;
   for (i = 0; i < 3; i++)
-    set_pan (psg, i, PAN_CENTER);
+  {
+    psg->ch_volume[i] = VOLUME_MAX;
+    psg->pan[i] = Y8960_PAN_CENTER;
+    update_gain (psg, i);
+  }
   psg->out_stereo[0] = psg->out_stereo[1] = 0;
 }
 
@@ -160,7 +161,7 @@ Y8960SSG_new (uint32_t clock, uint32_t rate)
   psg->quality = 0;
   internal_refresh(psg);
   Y8960SSG_setMask(psg, 0x00);
-  reset_pan(psg);
+  reset_mixer(psg);
   return psg;
 }
 
@@ -239,7 +240,7 @@ Y8960SSG_reset (Y8960SSG * psg)
 
   psg->out = 0;
 
-  reset_pan(psg);
+  reset_mixer(psg);
 }
 
 void
@@ -412,8 +413,8 @@ mix_output_stereo(Y8960SSG *psg, int32_t mix[2])
   mix[0] = mix[1] = 0;
   for (i = 0; i < 3; i++)
   {
-    mix[0] += (int32_t)(psg->ch_out[i] * psg->pan_gain[i][0]);
-    mix[1] += (int32_t)(psg->ch_out[i] * psg->pan_gain[i][1]);
+    mix[0] += (int32_t)(psg->ch_out[i] * psg->ch_gain[i][0]);
+    mix[1] += (int32_t)(psg->ch_out[i] * psg->ch_gain[i][1]);
   }
 }
 
@@ -448,12 +449,6 @@ void
 Y8960SSG_writeReg (Y8960SSG * psg, uint32_t reg, uint32_t val)
 {
   int c;
-
-  if (0x10 <= reg && reg <= 0x12)
-  {
-    set_pan(psg, reg - 0x10, val);
-    return;
-  }
 
   if (reg > 15) return;
 

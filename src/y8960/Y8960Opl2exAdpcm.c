@@ -24,7 +24,6 @@
 
 /* Bitmask for register $07 */
 #define R07_RESET 1
-#define R07_SP_OFF 8
 #define R07_REPEAT 16
 #define R07_MEMORY_DATA 32
 #define R07_REC 64
@@ -162,10 +161,8 @@ static inline uint32_t calc(Y8960OPL_ADPCM *_this) {
   return ((_this->output[0] + _this->output[1]) * (_this->reg[0x12] & 0xff)) >> 13;
 }
 
+/* Unlike the Y8950, the Y8960 has no SP-OFF: bit 3 of 07h is ignored. */
 int16_t Y8960OPL_ADPCM_calc(Y8960OPL_ADPCM *_this) {
-  if (_this->reg[0x07] & R07_SP_OFF)
-    return 0;
-
   if (!_this->play_start)
     return 0;
 

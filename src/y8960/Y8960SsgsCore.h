@@ -2,15 +2,18 @@
 /*
    Forked from emu2149 v1.42 for the Y8960 cartridge, 2026 by madscient.
 
-   The cartridge's SSGS block is the SSG part of a YMZ705: two YM2149 units,
-   each with a 4 bit panpot per channel at its registers 10h-12h. One instance
-   of this core is one such unit; the caller splits the 00h-3Fh register space
-   between two of them. Every exported symbol is renamed with a Y8960 prefix
-   because the unmodified emu2149 is linked into the same binary for the plain
-   SSG chip.
+   The cartridge's SSGS block is two YM2149 units, and each channel of a unit
+   has a volume (0-128) and a stereo position on top of the YM2149's own
+   registers. One instance of this core is one such unit; the caller splits
+   the chip's register space between two of them and hands the volume and the
+   position in through Y8960SSG_setChannelVolume / Y8960SSG_setChannelPan.
+   The position law is in Y8960Pan.h. Every exported symbol is renamed with a
+   Y8960 prefix because the unmodified emu2149 is linked into the same binary
+   for the plain SSG chip.
 
-   The panpot is applied per channel before the rate converter, so the stereo
-   output goes through the same converter as the mono one.
+   The volume and the position are applied per channel before the rate
+   converter, so the stereo output goes through the same converter as the mono
+   one. Y8960SSG_calc (mono) applies neither.
 */
 #ifndef _Y8960_SSGS_CORE_H_
 #define _Y8960_SSGS_CORE_H_
@@ -77,9 +80,10 @@ extern "C"
     /* output of channels */
     int16_t ch_out[3];
 
-    /* panpot register value and the left/right gains it gives */
+    /* channel volume and stereo position, and the left/right gains they give */
+    uint8_t ch_volume[3];
     uint8_t pan[3];
-    float pan_gain[3][2];
+    float ch_gain[3][2];
     int32_t out_stereo[2];
 
   } Y8960SSG;
@@ -98,6 +102,10 @@ extern "C"
   int16_t Y8960SSG_calc (Y8960SSG *);
   /* out[0]: left, out[1]: right */
   void Y8960SSG_calcStereo (Y8960SSG *, int32_t out[2]);
+  /* ch: 0-2. volume: 0-128, 128 is full. pan: 1 hard left, 128 centre,
+   * 255 hard right. Both are 128 after reset. */
+  void Y8960SSG_setChannelVolume (Y8960SSG * psg, uint32_t ch, uint8_t volume);
+  void Y8960SSG_setChannelPan (Y8960SSG * psg, uint32_t ch, uint8_t pan);
   void Y8960SSG_setVolumeMode (Y8960SSG * psg, int type);
   uint32_t Y8960SSG_setMask (Y8960SSG *, uint32_t mask);
   uint32_t Y8960SSG_toggleMask (Y8960SSG *, uint32_t mask);

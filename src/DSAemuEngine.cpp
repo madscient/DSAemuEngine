@@ -51,7 +51,7 @@ enum class ChipKind {
     DCSG,   // emu76489 SN76489
     OPL2EX, // y8960    Y8960 拡張 OPL2 (YM3812 + ADPCM-B)
     OPLLEX, // y8960    Y8960 拡張 OPLL (チャンネル別プリセット音色バンク)
-    SSGS,   // y8960    Y8960 SSGS (YMZ705 の SSG 部: YM2149 x2 + パンポット)
+    SSGS,   // y8960    Y8960 SSGS (YM2149 x2 + チャンネルごとの音量と定位)
 };
 
 // =========================================================
@@ -203,7 +203,7 @@ static const ChipDesc kChipTable[] = {
     { "DCSG",   ChipKind::DCSG   },  // SN76489
     { "OPL2EX", ChipKind::OPL2EX },  // Y8960 拡張 OPL2
     { "OPLLEX", ChipKind::OPLLEX },  // Y8960 拡張 OPLL
-    { "SSGS",   ChipKind::SSGS   },  // Y8960 SSGS (clock はマスタークロック)
+    { "SSGS",   ChipKind::SSGS   },  // Y8960 SSGS
 };
 static constexpr uint32_t kChipCount = (uint32_t)(sizeof(kChipTable) / sizeof(kChipTable[0]));
 
@@ -213,16 +213,6 @@ static const ChipDesc* findChipDesc(const char* name) {
         if (strcmp(kChipTable[i].name, name) == 0)
             return &kChipTable[i];
     return nullptr;
-}
-
-// =========================================================
-//  クロック
-// =========================================================
-// SSGS の clock はマスタークロック (YMZ705 の XI ピン) で、SSG はそれを分周した
-// クロックで動く。分周比を選ぶ S6M ピンに当たる指定が無いので、EPSGemuEngine の
-// SSGS と同じく 5.12MHz 未満なら 1/2、以上なら 1/3 とする
-static uint32_t ssgsUnitClock(uint32_t clock) {
-    return clock < 5120000 ? clock / 2 : clock / 3;
 }
 
 // =========================================================
@@ -335,10 +325,7 @@ static std::unique_ptr<ChipEntry> createChip(
         // Y8960OPLL_new が 4 バンクの音色の読み込みとリセットまで済ませる
         e->opllex = Y8960OPLL_new(e->clock, sample_rate);
         if (!e->opllex) return nullptr;
-        // 部位は出さないが、OPLL 系と同じくメロディとリズムを分けて取り出し、等倍で
-        // 混ぜ直す。分けずに取り出すと、レート変換が働くときに両者が重なるところで
-        // 出力が 1 LSB 変わる
-        routeOpllParts(e->opllex, Y8960OPLL_setPan);
+        // 定位は 50h-58h でコアが決める。部位は出さない
         break;
 
     case ChipKind::Y8950:
@@ -398,7 +385,7 @@ static std::unique_ptr<ChipEntry> createChip(
 
     case ChipKind::SSGS:
         for (auto& unit : e->ssgs) {
-            unit = Y8960SSG_new(ssgsUnitClock(e->clock), sample_rate);
+            unit = Y8960SSG_new(e->clock, sample_rate);
             if (!unit) return nullptr;
             Y8960SSG_setQuality(unit, 1);
             Y8960SSG_reset(unit);
@@ -449,10 +436,16 @@ static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val, uint32_t port) {
         Y8960OPLL_writeReg(c.opllex, reg, val);
         break;
     case ChipKind::SSGS:
-        // 00h-1Fh が SSG-1、20h-3Fh が SSG-2。40h 以降は YMZ705 では ADPCM 部だが、
-        // Y8960 の SSGS は持たない
-        if (reg < 0x40)
-            Y8960SSG_writeReg(c.ssgs[reg >> 5], reg & 0x1F, val);
+        // 00h-0Fh が SSG-1、10h-1Fh が SSG-2 の YM2149 のレジスタ。
+        // 20h-2Fh は 4 個ずつ SSG-1 の音量、SSG-2 の音量、SSG-1 の定位、SSG-2 の定位で、
+        // 各組の 4 個目は未接続。30h 以降も未接続
+        if (reg < 0x20) {
+            Y8960SSG_writeReg(c.ssgs[reg >> 4], reg & 0x0F, val);
+        } else if (reg < 0x30 && (reg & 3) != 3) {
+            Y8960SSG* unit = c.ssgs[(reg >> 2) & 1];
+            if (reg & 0x08) Y8960SSG_setChannelPan(unit, reg & 3, val);
+            else            Y8960SSG_setChannelVolume(unit, reg & 3, val);
+        }
         break;
     }
 }
@@ -487,8 +480,7 @@ static void chipCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
         return;
     case ChipKind::OPLLEX:
         Y8960OPLL_calcStereo(c.opllex, buf);
-        mixOpllParts(c, buf, out_l, out_r);
-        return;
+        break;
     case ChipKind::Y8950:
     case ChipKind::OPL:
     case ChipKind::OPL2:
