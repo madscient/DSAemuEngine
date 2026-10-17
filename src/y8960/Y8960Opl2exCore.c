@@ -8,6 +8,7 @@
    See Y8960Opl2exCore.h for what the fork changes and why.
 */
 #include "Y8960Opl2exCore.h"
+#include "Y8960Pan.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1115,6 +1116,8 @@ void Y8960OPL_reset(Y8960OPL *opl) {
     opl->pan[i] = 3;
     opl->pan_fine[i][1] = opl->pan_fine[i][0] = 4096;
   }
+  for (i = 0; i < Y8960OPL_PAN_REG_COUNT; i++)
+    Y8960OPL_writeReg(opl, Y8960OPL_PAN_REG_BASE + i, Y8960_PAN_CENTER);
 
   for (i = 0; i < 15; i++) {
     opl->ch_out[i] = 0;
@@ -1206,6 +1209,24 @@ uint32_t Y8960OPL_toggleMask(Y8960OPL *opl, uint32_t mask) {
     return ret;
   } else
     return 0;
+}
+
+/* Outputs that take each position register: F6h-FEh are ch0-8, and ch6 also
+** drives BD, ch7 HH and SD, ch8 TOM and CYM (the ch_out indices of the rhythm
+** sounds). FFh is the ADPCM. */
+static const int8_t pan_outputs[Y8960OPL_PAN_REG_COUNT][3] = {
+    {0, -1, -1}, {1, -1, -1}, {2, -1, -1},  {3, -1, -1},  {4, -1, -1},
+    {5, -1, -1}, {6, 9, -1},  {7, 10, 11}, {8, 12, 13}, {14, -1, -1},
+};
+
+static void set_pan(Y8960OPL *opl, int32_t index, uint8_t pan) {
+  double gain[2];
+  int i;
+  Y8960_panGain(pan, gain);
+  for (i = 0; i < 3 && pan_outputs[index][i] >= 0; i++) {
+    opl->pan_fine[pan_outputs[index][i]][0] = (int32_t)floor(gain[0] * 4096.0 + 0.5);
+    opl->pan_fine[pan_outputs[index][i]][1] = (int32_t)floor(gain[1] * 4096.0 + 0.5);
+  }
 }
 
 void Y8960OPL_writeReg(Y8960OPL *opl, uint32_t reg, uint8_t data) {
@@ -1317,7 +1338,7 @@ void Y8960OPL_writeReg(Y8960OPL *opl, uint32_t reg, uint8_t data) {
     opl->am_mode = (data >> 7) & 1;
     opl->pm_mode = (data >> 6) & 1;
 
-  } else if (0xe0 <= reg && reg < 0x100) {
+  } else if (0xe0 <= reg && reg < Y8960OPL_PAN_REG_BASE) {
     if (opl->reg[0x01] & 0x20) {
       s = stbl[reg - 0xe0];
       if (s >= 0) {
@@ -1325,6 +1346,8 @@ void Y8960OPL_writeReg(Y8960OPL *opl, uint32_t reg, uint8_t data) {
         request_update(&(opl->slot[s]), UPDATE_WS);
       }
     }
+  } else if (Y8960OPL_PAN_REG_BASE <= reg) {
+    set_pan(opl, reg - Y8960OPL_PAN_REG_BASE, data);
   }
 }
 

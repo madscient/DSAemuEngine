@@ -14,6 +14,11 @@
    (Y8960OPL_setADPCMMemoryMap), because the cartridge's two circuits divide
    one 256KB SRAM between them.
 
+   Registers F6h-FEh are the 8 bit stereo positions of ch0-8 and FFh that of
+   the ADPCM (Y8960Pan.h), set through pan_fine. The rhythm sounds follow the
+   channels whose slots they use. Registers F6h-FFh are outside the waveform
+   select, which ends at F5h.
+
    Carried over from later emu8950 releases: the ADPCM stops the way v1.2.2
    does (see Y8960Opl2exAdpcm.c), and the rate converter, the output timing and
    the 4.12 fixed-point pan_fine are those of v1.2.3. The converter takes L and
@@ -46,6 +51,10 @@ typedef struct __Y8960OPL_PATCH {
 #define Y8960OPL_MASK_BD (1 << 13)
 #define Y8960OPL_MASK_ADPCM (1 << 14)
 #define Y8960OPL_MASK_RHYTHM (Y8960OPL_MASK_HH | Y8960OPL_MASK_CYM | Y8960OPL_MASK_TOM | Y8960OPL_MASK_SD | Y8960OPL_MASK_BD)
+
+/* stereo positions: F6h-FEh for ch0-8, FFh for the ADPCM */
+#define Y8960OPL_PAN_REG_BASE 0xf6
+#define Y8960OPL_PAN_REG_COUNT 10
 
 /* rate conveter */
 typedef struct __Y8960OPL_RateConv {
