@@ -68,8 +68,10 @@ DSAemuEngine/
 │   ├── FmEngineApi.h         ← API ヘッダ (FMEngineTest と共通)
 │   ├── DSAemuEngine.cpp      ← エンジン実装
 │   └── y8960/                ← OPL2EX / OPLLEX / SSGS 用のコア (emu8950 / emu2413 / emu2149 の改造版)
+│                               と、Y8960 の SCC 用のコア (emu2212 の改造版。チップとしては使えない)
 └── tests/
-    └── api_test.cpp          ← DLL を実行時にロードして叩く試験
+    ├── api_test.cpp          ← DLL を実行時にロードして叩く試験
+    └── y8960_scc_test.cpp    ← Y8960 の SCC 用のコアを直接叩く試験
 ```
 
 ## セットアップ
@@ -103,8 +105,9 @@ cmake --build build --config Release
 
 ### 試験
 
-ビルドすると `api_test` も作られます。ビルドした共有ライブラリを実行時にロードし、
-エクスポートされた関数だけを通して振る舞いを確かめます。
+ビルドすると `api_test` と `y8960_scc_test` も作られます。`api_test` はビルドした共有ライブラリを
+実行時にロードし、エクスポートされた関数だけを通して振る舞いを確かめます。`y8960_scc_test` は
+チップとしては使えない Y8960 の SCC 用のコアを、元の emu2212 と並べて直接確かめます。
 
 ```bash
 ctest --test-dir build -C Release --output-on-failure
@@ -345,7 +348,7 @@ L = cos θ、R = sin θ、θ = (値 − 1) / 254 × 90° です。中央では L
 各 submodule はそれぞれのライセンスに従います。  
 `emu2149`, `emu2413`, `emu8950`, `emu2212`, `emu76489` はすべて **MIT License** です。
 
-`src/y8960/` のコアは emu8950 / emu2413 / emu2149 を改造したもので、元と同じ **MIT License** です。
+`src/y8960/` のコアは emu8950 / emu2413 / emu2149 / emu2212 を改造したもので、元と同じ **MIT License** です。
 ただし `src/y8960/Y8960OpllCore.c` のプリセット音色データは
 "Copyright free OPLL(x) ROM patches" (David Viens, Hubert Lamontagne) によるもので、
 **CC BY-SA** に従います。

@@ -1,7 +1,7 @@
 /*
    The 8 bit stereo position the Y8960 gives the SSGS channels (28h-2Eh), the
-   OPLLEX channels (50h-58h) and the OPL2EX channels and ADPCM (F6h-FFh),
-   2026 by madscient.
+   OPLLEX channels (50h-58h), the OPL2EX channels and ADPCM (F6h-FFh) and the
+   SCC channels, 2026 by madscient.
 
    The specification fixes only the ends and the centre: 1 is hard left, 128
    the centre, 255 hard right, and 128 after reset. The law in between is equal
