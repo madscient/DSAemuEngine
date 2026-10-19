@@ -50,8 +50,7 @@ set(CORE_SOURCES
     src/y8960/Y8960OpllCore.c
     src/y8960/Y8960SsgsCore.c
 
-    # emu2212 のフォーク → Y8960 の SCC。定位のレジスタが決まるまでチップには繋がない。
-    # 素の emu2212 と同じバイナリに入れて、記号の衝突をここで捕まえる
+    # emu2212 のフォーク → SCCEX (Y8960 の SCC)
     src/y8960/Y8960SccCore.c
 )
 
@@ -119,7 +118,7 @@ if(DSAEMU_BUILD_TESTS)
     add_dependencies(api_test DSAemuEngine)
     add_test(NAME api_test COMMAND api_test $<TARGET_FILE:DSAemuEngine>)
 
-    # エンジンから届かないコアを、素のコアと並べて直接叩く
+    # Y8960 の SCC のコアを、素のコアと並べて直接叩く (quality 0 の経路など、エンジンから届かない所を含む)
     add_executable(y8960_scc_test
         tests/y8960_scc_test.cpp
         src/y8960/Y8960SccCore.c

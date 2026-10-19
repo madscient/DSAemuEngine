@@ -4,7 +4,8 @@
 // 失敗した項目があれば終了コードが 0 以外になる。
 //
 // 新しいチップの振る舞いは、できるかぎり素のコアのチップと同じ書き込みを
-// して出力を突き合わせる形で確かめる (OPL2EX と OPL2 / Y8950、OPLLEX と OPLL)。
+// して出力を突き合わせる形で確かめる
+// (OPL2EX と OPL2 / Y8950、OPLLEX と OPLL、SSGS と SSG、SCCEX と SCC)。
 // 突き合わせる差分そのものが効いていることも、同じ試験の中で確かめる。
 
 #include "FmEngineApi.h"
@@ -125,7 +126,7 @@ constexpr uint32_t kClock = 3579545;
 // Y8960 が SSGS に配るクロック
 constexpr uint32_t kSsgClock = 1789772;
 
-struct Reg { uint8_t reg, val; };
+struct Reg { uint8_t reg, val; uint32_t port = 0; };
 using Regs = std::vector<Reg>;
 
 struct Out {
@@ -148,7 +149,7 @@ struct Engine {
         return id;
     }
     void write(uint32_t id, const Regs& regs) {
-        for (const auto& r : regs) A.Write(h, id, r.reg, r.val, 0);
+        for (const auto& r : regs) A.Write(h, id, r.reg, r.val, r.port);
     }
     Out render(uint32_t frames = kFrames) {
         Out o;
@@ -351,7 +352,7 @@ std::function<void(Engine&, uint32_t)> withAdpcm(const Regs& regs, bool load = t
 // ---------------------------------------------------------
 const char* const kChips[] = {
     "SSG", "OPLL", "OPLLP", "OPLLX", "VRC7", "Y8950", "OPL", "OPL2",
-    "SCC", "SCCP", "DCSG", "OPL2EX", "OPLLEX", "SSGS",
+    "SCC", "SCCP", "DCSG", "OPL2EX", "OPLLEX", "SSGS", "SCCEX",
 };
 constexpr uint32_t kChipCount = sizeof(kChips) / sizeof(kChips[0]);
 
@@ -364,7 +365,7 @@ void testChipList() {
     bool order = (n == kChipCount);
     for (uint32_t i = 0; order && i < n; ++i)
         order = std::strcmp(A.GetSupportedChip(e.h, i), kChips[i]) == 0;
-    check("chip list keeps the old order and appends OPL2EX, OPLLEX, SSGS", order);
+    check("chip list keeps the old order and appends OPL2EX, OPLLEX, SSGS, SCCEX", order);
 
     bool rejected = true;
     for (const char* name : kChips) {
@@ -921,6 +922,84 @@ void testSsgs() {
           same(play("SSGS", concat({ junk, ssgNotes(0x00) })), unit1Only));
 }
 
+// 標準の SCC の窓 (port 0)。5 チャンネルに別々の波形・周波数・音量を入れ、
+// sounding のビットが立ったチャンネルだけを鳴らす。CH3 と CH4 は波形を共有する。
+// 鳴らさないチャンネルは 8Fh ではなく音量 0 で黙らせる。emu2212 はリセット直後に
+// 全チャンネルを有効にしていて、8Fh の変更は各チャンネルの波形が 1 周したときに効くため
+Regs sccNotes(uint8_t sounding = 0x1F) {
+    Regs r;
+    for (int i = 0; i < 32; ++i) {
+        r.push_back({ (uint8_t)(0x00 + i), (uint8_t)(i < 16 ? 0x70 : 0x90) });
+        r.push_back({ (uint8_t)(0x20 + i), (uint8_t)(i * 8 - 128) });
+        r.push_back({ (uint8_t)(0x40 + i), (uint8_t)((i < 16 ? i : 31 - i) * 16 - 120) });
+        r.push_back({ (uint8_t)(0x60 + i), (uint8_t)(i % 4 < 2 ? 0x50 : 0xC0) });
+    }
+    static const uint16_t freq[5] = { 0x0FE, 0x150, 0x1C0, 0x0A0, 0x230 };
+    static const uint8_t volume[5] = { 0x0F, 0x0C, 0x0A, 0x0E, 0x08 };
+    for (int ch = 0; ch < 5; ++ch) {
+        r.push_back({ (uint8_t)(0x80 + ch * 2), (uint8_t)(freq[ch] & 0xFF) });
+        r.push_back({ (uint8_t)(0x81 + ch * 2), (uint8_t)(freq[ch] >> 8) });
+        r.push_back({ (uint8_t)(0x8A + ch), (uint8_t)((sounding >> ch) & 1 ? volume[ch] : 0) });
+    }
+    r.push_back({ 0x8F, 0x1F });
+    return r;
+}
+
+// 9900h-9904h は port 1 の 00h-04h
+Regs sccexPan(int ch, uint8_t pan) {
+    return { { (uint8_t)ch, pan, 1 } };
+}
+
+Regs sccexPans(uint8_t pan) {
+    Regs r;
+    for (int ch = 0; ch < 5; ++ch) r.push_back({ (uint8_t)ch, pan, 1 });
+    return r;
+}
+
+void testSccex() {
+    Out scc = play("SCC", sccNotes());
+    Out left = play("SCCEX", concat({ sccexPans(1), sccNotes() }));
+    check("SCCEX: hard left sounds exactly as the plain SCC", audible(scc) && sameOnLeft(left, scc));
+    Out right = play("SCCEX", concat({ sccexPans(255), sccNotes() }));
+    check("SCCEX: pan 255 is hard right", right.r == scc.l && allZero(right.l));
+    Out slowScc = play("SCC", 1789772, sccNotes());
+    check("SCCEX: clock means the same as for the SCC chip",
+          sameOnLeft(play("SCCEX", 1789772, concat({ sccexPans(1), sccNotes() })), slowScc) &&
+          slowScc.l != scc.l);
+
+    Out center = play("SCCEX", sccNotes());
+    check("SCCEX: the channels sound on both sides alike until 9900h-9904h are written",
+          audible(center) && center.l == center.r);
+    check("SCCEX: pan 128 is the centre, and so is the undefined 0",
+          same(play("SCCEX", concat({ sccexPans(128), sccNotes() })), center) &&
+          same(play("SCCEX", concat({ sccexPans(0), sccNotes() })), center));
+    check("SCCEX: the centre is equal power (cos 45 degrees each side)",
+          std::fabs(rms(center.l) / rms(left.l) - kCentreGain) < 0.01);
+    Out p64 = play("SCCEX", concat({ sccexPan(0, 64), sccNotes(0x01) }));
+    check("SCCEX: pan 64 leans left by the equal power law",
+          std::fabs(rms(p64.r) / rms(p64.l) - panTan(64)) < 0.01);
+
+    // k だけを左端、ほかを右端に置き、素の SCC で k だけを鳴らした音と、k 以外を鳴らした音に
+    // 分かれるかを見る。番地のずれとチャンネルの取り違えを捕まえる
+    bool mapped = true;
+    for (int k = 0; k < 5; ++k) {
+        Out split = play("SCCEX", concat({ sccexPans(255), sccexPan(k, 1), sccNotes() }));
+        Out only = play("SCC", sccNotes((uint8_t)(1 << k)));
+        Out rest = play("SCC", sccNotes((uint8_t)(0x1F & ~(1 << k))));
+        mapped = mapped && audible(only) && split.l == only.l && split.r == rest.l;
+    }
+    check("SCCEX: 9900h-9904h place channels A-E in that order", mapped);
+
+    // 窓や定位に紛れ込めば音が変わる値を、鳴らしたあとに書く。
+    // 0x98 / 0x99 は、番地の上位バイトを port に取る読み方でなら届く番地
+    Regs junk;
+    for (int r = 0x05; r < 0x100; ++r) junk.push_back({ (uint8_t)r, 0x01, 1 });
+    for (uint32_t port : { 2u, 0x98u, 0x99u, 0xFFu })
+        for (int r = 0; r < 5; ++r) junk.push_back({ (uint8_t)r, 0x01, port });
+    check("SCCEX: port 1 past 04h and ports 2 and above change nothing",
+          same(play("SCCEX", concat({ sccNotes(), junk })), center));
+}
+
 // 07h の REC と MEMORY DATA を立て、0Fh からサンプルを書き込む
 Regs adpcmWrite(const std::vector<uint8_t>& data) {
     Regs r = { { 0x07, 0x60 } };
@@ -1175,6 +1254,7 @@ int main(int argc, char** argv) {
     testOpl2exPan();
     testAdpcmStop();
     testSsgs();
+    testSccex();
     testMemoryApi();
     testSetMemoryEx();
 

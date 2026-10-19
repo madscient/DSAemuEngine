@@ -6,7 +6,7 @@
 //   emu8950  (Y8950/YM3526/YM3812)   → Y8950 / OPL / OPL2 チップ
 //   emu2212  (Konami SCC)             → SCC / SCCP チップ
 //   emu76489 (SN76489 DCSG)          → DCSG チップ
-//   src/y8960 (emu8950 / emu2413 / emu2149 のフォーク) → OPL2EX / OPLLEX / SSGS チップ (Y8960)
+//   src/y8960 (emu8950 / emu2413 / emu2149 / emu2212 のフォーク) → OPL2EX / OPLLEX / SSGS / SCCEX チップ (Y8960)
 
 #include "FmEngineApi.h"
 #include "../extern/emu2149/emu2149.h"
@@ -17,6 +17,7 @@
 #include "y8960/Y8960Opl2exCore.h"
 #include "y8960/Y8960OpllCore.h"
 #include "y8960/Y8960SsgsCore.h"
+#include "y8960/Y8960SccCore.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -52,6 +53,7 @@ enum class ChipKind {
     OPL2EX, // y8960    Y8960 拡張 OPL2 (YM3812 + ADPCM-B)
     OPLLEX, // y8960    Y8960 拡張 OPLL (チャンネル別プリセット音色バンク)
     SSGS,   // y8960    Y8960 SSGS (YM2149 x2 + チャンネルごとの音量と定位)
+    SCCEX,  // y8960    Y8960 SCC (標準の SCC + チャンネルごとの定位)
 };
 
 // =========================================================
@@ -124,6 +126,7 @@ struct ChipEntry {
     Y8960OPL*  opl2ex = nullptr;
     Y8960OPLL* opllex = nullptr;
     Y8960SSG*  ssgs[2] = { nullptr, nullptr };
+    Y8960SCC*  sccex  = nullptr;
 
     // FmEngine_SetMemoryEx の割り当て
     struct MemMapping {
@@ -169,6 +172,7 @@ struct ChipEntry {
         if (opllex) { Y8960OPLL_delete(opllex); opllex = nullptr; }
         for (auto& unit : ssgs)
             if (unit) { Y8960SSG_delete(unit); unit = nullptr; }
+        if (sccex)  { Y8960SCC_delete(sccex); sccex = nullptr; }
     }
 };
 
@@ -204,6 +208,7 @@ static const ChipDesc kChipTable[] = {
     { "OPL2EX", ChipKind::OPL2EX },  // Y8960 拡張 OPL2
     { "OPLLEX", ChipKind::OPLLEX },  // Y8960 拡張 OPLL
     { "SSGS",   ChipKind::SSGS   },  // Y8960 SSGS
+    { "SCCEX",  ChipKind::SCCEX  },  // Y8960 SCC
 };
 static constexpr uint32_t kChipCount = (uint32_t)(sizeof(kChipTable) / sizeof(kChipTable[0]));
 
@@ -391,6 +396,16 @@ static std::unique_ptr<ChipEntry> createChip(
             Y8960SSG_reset(unit);
         }
         break;
+
+    case ChipKind::SCCEX:
+        // Y8960 の SCC は標準の SCC の窓だけを持つ。有効化は SCC と同じ
+        e->sccex = Y8960SCC_new(e->clock, sample_rate);
+        if (!e->sccex) return nullptr;
+        Y8960SCC_set_type(e->sccex, Y8960SCC_STANDARD);
+        Y8960SCC_set_quality(e->sccex, 1);
+        Y8960SCC_reset(e->sccex);
+        Y8960SCC_write(e->sccex, 0x9000, 0x3F);
+        break;
     }
 
     return e;
@@ -398,10 +413,10 @@ static std::unique_ptr<ChipEntry> createChip(
 
 // =========================================================
 //  レジスタ書き込みヘルパー
-//  DCSG は port/reg を無視し val をシリアルバイトとして送る
+//  DCSG は port/reg を無視し val をシリアルバイトとして送る。
+//  port を使うのは SCCEX だけ
 // =========================================================
 static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val, uint32_t port) {
-    (void)port;
     switch (c.kind) {
     case ChipKind::SSG:
         PSG_writeReg(c.psg, reg, val);
@@ -446,6 +461,13 @@ static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val, uint32_t port) {
             if (reg & 0x08) Y8960SSG_setChannelPan(unit, reg & 3, val);
             else            Y8960SSG_setChannelVolume(unit, reg & 3, val);
         }
+        break;
+    case ChipKind::SCCEX:
+        // 番地は 0x9800 + port * 0x100 + reg。定位の 0x9900-0x9904 は SCC の窓の外で、
+        // コアの Y8960SCC_write はそこを無視するので、ここで読み解く。
+        // port 1 の 05h 以降はコアの setChannelPan が範囲外として無視する
+        if (port == 0)      Y8960SCC_write(c.sccex, 0x9800 + reg, val);
+        else if (port == 1) Y8960SCC_setChannelPan(c.sccex, reg, val);
         break;
     }
 }
@@ -509,6 +531,9 @@ static void chipCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
             buf[0] += unit_buf[0];
             buf[1] += unit_buf[1];
         }
+        break;
+    case ChipKind::SCCEX:
+        Y8960SCC_calcStereo(c.sccex, buf);
         break;
     }
     out_l += (float)buf[0] * kOutputScale * c.gain_l;
