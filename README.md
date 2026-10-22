@@ -3,7 +3,7 @@
 **FmEngineApi** 準拠の音源エミュレーションエンジン。  
 [digital-sound-antiques](https://github.com/digital-sound-antiques) の各エミュレーションコアを  
 Git submodule として統合した共有ライブラリ (DLL / .so / .dylib) です。  
-[Y8960](https://github.com/hra1129/Y8960_Cartridge) カートリッジの拡張 OPL2 部・拡張 OPLL 部・SSGS も、
+[Y8960](https://github.com/hra1129/Y8960_Cartridge) カートリッジの拡張 OPL2 部・拡張 OPLL 部・SSG 部も、
 emu8950 / emu2413 / emu2149 を改造したコアで提供します。
 
 ## 統合コア (submodules)
@@ -22,7 +22,7 @@ emu8950 / emu2413 / emu2149 を改造したコアで提供します。
 |---|---|---|---|
 | `src/y8960/Y8960Opl2exCore.*`, `Y8960Opl2exAdpcm.*` | emu8950 v1.1.4 (ADPCM の止まり方は v1.2.2、レート変換と出力のタイミングは v1.2.3 と同じ) | 拡張 OPL2 部 (YM3812 + ADPCM-B) | `OPL2EX` |
 | `src/y8960/Y8960OpllCore.*` | emu2413 v1.5.9 (レート変換と出力のタイミングは v1.6.4 と同じ) | 拡張 OPLL 部 (チャンネル別プリセット音色バンク) | `OPLLEX` |
-| `src/y8960/Y8960SsgsCore.*` | emu2149 v1.42 | SSGS (YM2149 × 2 + チャンネルごとの音量と定位) | `SSGS` |
+| `src/y8960/Y8960SsgsCore.*` | emu2149 v1.42 | SSG 部 (YM2149 × 2 + チャンネルごとの音量と定位) | `SSGEX` |
 | `src/y8960/Y8960SccCore.*` | emu2212 v1.16 | SCC (標準の SCC + チャンネルごとの定位) | `SCCEX` |
 
 `extern/` の submodule は改造せず、そのまま `SSG` / `OPL2` / `Y8950` / `OPLL` などに使います。
@@ -44,7 +44,7 @@ emu8950 / emu2413 / emu2149 を改造したコアで提供します。
 | `DCSG`  | SN76489                  | clock / 16 (3.579545 MHz で 223,721 Hz) |
 | `OPL2EX` | Y8960 拡張 OPL2 部 (YM3812 + ADPCM-B) | clock / 72 |
 | `OPLLEX` | Y8960 拡張 OPLL 部 (YM2413 + 音色バンク) | clock / 72 |
-| `SSGS`   | Y8960 SSGS (YM2149 × 2)  | clock / 8 (1.789772 MHz で 223,721 Hz) |
+| `SSGEX`  | Y8960 SSG 部 (YM2149 × 2) | clock / 8 (1.789772 MHz で 223,721 Hz) |
 | `SCCEX`  | Y8960 SCC (Konami SCC + 定位) | clock / 2 |
 
 `FmEngine_GetSupportedChip` はこの表の順にチップ名を返します。
@@ -69,7 +69,7 @@ DSAemuEngine/
 ├── src/
 │   ├── FmEngineApi.h         ← API ヘッダ (FMEngineTest と共通)
 │   ├── DSAemuEngine.cpp      ← エンジン実装
-│   └── y8960/                ← OPL2EX / OPLLEX / SSGS / SCCEX 用のコア (emu8950 / emu2413 / emu2149 / emu2212 の改造版)
+│   └── y8960/                ← OPL2EX / OPLLEX / SSGEX / SCCEX 用のコア (emu8950 / emu2413 / emu2149 / emu2212 の改造版)
 └── tests/
     ├── api_test.cpp          ← DLL を実行時にロードして叩く試験
     └── y8960_scc_test.cpp    ← SCCEX 用のコアを直接叩く試験
@@ -306,7 +306,7 @@ YM2413 に、チャンネルごとにプリセット音色のバンクを選ぶ�
   から取っています。そのためバンク 0 の音色は `OPLL` チップの音色と完全には一致しません
 - 実機は 2 回路を持ちます。2 回路を鳴らすときは `OPLLEX` を 2 個追加してください
 
-### SSGS (Y8960 SSGS)
+### SSGEX (Y8960 SSG 部)
 
 YM2149 相当の SSG を 2 系統持ち、6 チャンネルそれぞれに音量と定位を持ちます。
 `reg` はレジスタ番号、`port` は使いません。
@@ -349,7 +349,7 @@ YM2149 相当の SSG を 2 系統持ち、6 チャンネルそれぞれに音量
 
 ### Y8960 の定位
 
-`OPL2EX`、`OPLLEX`、`SSGS`、`SCCEX` の定位のレジスタは 8bit で、1 が左端、128 が中央、255 が右端です。
+`OPL2EX`、`OPLLEX`、`SSGEX`、`SCCEX` の定位のレジスタは 8bit で、1 が左端、128 が中央、255 が右端です。
 その間は等パワーの則で、L と R のレベルの 2 乗の和が一定です。0 は中央として扱います。
 
 | 値 | 1 | 32 | 64 | 96 | 128 (0) | 160 | 192 | 224 | 255 |

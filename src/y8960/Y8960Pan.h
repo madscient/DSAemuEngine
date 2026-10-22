@@ -1,5 +1,5 @@
 /*
-   The 8 bit stereo position the Y8960 gives the SSGS channels (28h-2Eh), the
+   The 8 bit stereo position the Y8960 gives the SSGEX channels (28h-2Eh), the
    OPLLEX channels (50h-58h), the OPL2EX channels and ADPCM (F6h-FFh) and the
    SCC channels (9900h-9904h), 2026 by madscient.
 

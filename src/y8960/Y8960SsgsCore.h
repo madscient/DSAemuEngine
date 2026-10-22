@@ -2,7 +2,7 @@
 /*
    Forked from emu2149 v1.42 for the Y8960 cartridge, 2026 by madscient.
 
-   The cartridge's SSGS block is two YM2149 units, and each channel of a unit
+   The cartridge's SSG block is two YM2149 units, and each channel of a unit
    has a volume (0-128) and a stereo position on top of the YM2149's own
    registers. One instance of this core is one such unit; the caller splits
    the chip's register space between two of them and hands the volume and the

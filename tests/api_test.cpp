@@ -5,7 +5,7 @@
 //
 // 新しいチップの振る舞いは、できるかぎり素のコアのチップと同じ書き込みを
 // して出力を突き合わせる形で確かめる
-// (OPL2EX と OPL2 / Y8950、OPLLEX と OPLL、SSGS と SSG、SCCEX と SCC)。
+// (OPL2EX と OPL2 / Y8950、OPLLEX と OPLL、SSGEX と SSG、SCCEX と SCC)。
 // 突き合わせる差分そのものが効いていることも、同じ試験の中で確かめる。
 
 #include "FmEngineApi.h"
@@ -123,7 +123,7 @@ constexpr uint32_t kRate = 48000;
 constexpr uint32_t kFrames = 4800;  // 0.1 秒
 // クロックを指定しない試験でチップに渡す値
 constexpr uint32_t kClock = 3579545;
-// Y8960 が SSGS に配るクロック
+// Y8960 が SSG 部に配るクロック
 constexpr uint32_t kSsgClock = 1789772;
 
 struct Reg { uint8_t reg, val; uint32_t port = 0; };
@@ -352,7 +352,7 @@ std::function<void(Engine&, uint32_t)> withAdpcm(const Regs& regs, bool load = t
 // ---------------------------------------------------------
 const char* const kChips[] = {
     "SSG", "OPLL", "OPLLP", "OPLLX", "VRC7", "Y8950", "OPL", "OPL2",
-    "SCC", "SCCP", "DCSG", "OPL2EX", "OPLLEX", "SSGS", "SCCEX",
+    "SCC", "SCCP", "DCSG", "OPL2EX", "OPLLEX", "SSGEX", "SCCEX",
 };
 constexpr uint32_t kChipCount = sizeof(kChips) / sizeof(kChips[0]);
 
@@ -365,7 +365,13 @@ void testChipList() {
     bool order = (n == kChipCount);
     for (uint32_t i = 0; order && i < n; ++i)
         order = std::strcmp(A.GetSupportedChip(e.h, i), kChips[i]) == 0;
-    check("chip list keeps the old order and appends OPL2EX, OPLLEX, SSGS, SCCEX", order);
+    check("chip list keeps the old order and appends OPL2EX, OPLLEX, SSGEX, SCCEX", order);
+
+    // SSGS は利用側で YMZ705 の名前で、レジスタ配置が SSGEX と違う。受け付けると
+    // 利用側は YMZ705 の配置で書き込む
+    uint32_t ssgs = 0;
+    check("AddChip does not take SSGS, which names the YMZ705",
+          A.AddChip(e.h, "SSGS", kSsgClock, &ssgs) == FM_ERR_UNKNOWN_CHIP);
 
     bool rejected = true;
     for (const char* name : kChips) {
@@ -793,7 +799,7 @@ void testAdpcmStop() {
     }
 }
 
-// YM2149 1 系統ぶん。base は SSGS では 0x00 (SSG-1) か 0x10 (SSG-2)
+// YM2149 1 系統ぶん。base は SSGEX では 0x00 (SSG-1) か 0x10 (SSG-2)
 // A: トーン、B: トーン + エンベロープ、C: ノイズ
 Regs ssgNotes(uint8_t base) {
     auto r = [base](uint8_t reg, uint8_t val) { return Reg{ (uint8_t)(base + reg), val }; };
@@ -832,85 +838,85 @@ Regs ssgHardLeft(int unit) {
 
 void testSsgs() {
     Out ssg  = play("SSG", kSsgClock, ssgNotes(0x00));
-    Out ssg1 = play("SSGS", kSsgClock, concat({ ssgHardLeft(0), ssgNotes(0x00) }));
-    check("SSGS: SSG-1 hard left sounds exactly as the plain SSG",
+    Out ssg1 = play("SSGEX", kSsgClock, concat({ ssgHardLeft(0), ssgNotes(0x00) }));
+    check("SSGEX: SSG-1 hard left sounds exactly as the plain SSG",
           audible(ssg) && ssg1.l == ssg.l && allZero(ssg1.r));
-    check("SSGS: SSG-2 (10h-1Fh, positions 2Ch-2Eh) sounds exactly the same",
-          same(play("SSGS", kSsgClock, concat({ ssgHardLeft(1), ssgNotes(0x10) })), ssg1));
+    check("SSGEX: SSG-2 (10h-1Fh, positions 2Ch-2Eh) sounds exactly the same",
+          same(play("SSGEX", kSsgClock, concat({ ssgHardLeft(1), ssgNotes(0x10) })), ssg1));
     // 6144000 は、YMZ705 のように分周する (5.12MHz 以上で 1/3) と食い違う値
-    check("SSGS: clock is the SSG's own clock, not divided",
-          play("SSGS", 6144000, concat({ ssgHardLeft(0), ssgNotes(0x00) })).l ==
+    check("SSGEX: clock is the SSG's own clock, not divided",
+          play("SSGEX", 6144000, concat({ ssgHardLeft(0), ssgNotes(0x00) })).l ==
           play("SSG", 6144000, ssgNotes(0x00)).l);
-    check("SSGS: a silent chip puts out exactly zero", [] {
-        Out o = play("SSGS", Regs{});
+    check("SSGEX: a silent chip puts out exactly zero", [] {
+        Out o = play("SSGEX", Regs{});
         return allZero(o.l) && allZero(o.r);
     }());
 
     // 定位。center は書かなかったときの出力
-    Out center = play("SSGS", ssgTone(0x00, 0));
+    Out center = play("SSGEX", ssgTone(0x00, 0));
     auto panned = [](uint8_t pan) {
-        return play("SSGS", concat({ ssgPan(0, 0, pan), ssgTone(0x00, 0) }));
+        return play("SSGEX", concat({ ssgPan(0, 0, pan), ssgTone(0x00, 0) }));
     };
     Out left = panned(1), right = panned(255);
-    check("SSGS: a channel sounds on both sides alike until a position is written",
+    check("SSGEX: a channel sounds on both sides alike until a position is written",
           audible(center) && center.l == center.r);
-    check("SSGS: pan 128 is the centre, and so is the undefined 0",
+    check("SSGEX: pan 128 is the centre, and so is the undefined 0",
           same(panned(128), center) && same(panned(0), center));
-    check("SSGS: pan 1 is hard left", rms(left.l) > kSilent && allZero(left.r));
-    check("SSGS: pan 255 is hard right", right.r == left.l && allZero(right.l));
-    check("SSGS: the centre is equal power (cos 45 degrees each side)",
+    check("SSGEX: pan 1 is hard left", rms(left.l) > kSilent && allZero(left.r));
+    check("SSGEX: pan 255 is hard right", right.r == left.l && allZero(right.l));
+    check("SSGEX: the centre is equal power (cos 45 degrees each side)",
           std::fabs(rms(center.l) / rms(left.l) - kCentreGain) < 0.01);
     Out p64 = panned(64), p192 = panned(192);
-    check("SSGS: pan 64 leans left by the equal power law",
+    check("SSGEX: pan 64 leans left by the equal power law",
           std::fabs(rms(p64.r) / rms(p64.l) - panTan(64)) < 0.01 &&
           std::fabs((rms(p64.l) * rms(p64.l) + rms(p64.r) * rms(p64.r)) /
                     (rms(left.l) * rms(left.l)) - 1.0) < 0.02);
-    check("SSGS: pan 192 leans right by the equal power law",
+    check("SSGEX: pan 192 leans right by the equal power law",
           std::fabs(rms(p192.r) / rms(p192.l) - panTan(192)) < 0.01);
 
     // 音量
     auto volume = [](uint8_t v) {
-        return play("SSGS", concat({ ssgVolume(0, 0, v), ssgTone(0x00, 0) }));
+        return play("SSGEX", concat({ ssgVolume(0, 0, v), ssgTone(0x00, 0) }));
     };
-    check("SSGS: volume 128 is the default", same(volume(128), center));
-    check("SSGS: volume 0 silences the channel", [&] {
+    check("SSGEX: volume 128 is the default", same(volume(128), center));
+    check("SSGEX: volume 0 silences the channel", [&] {
         Out o = volume(0);
         return allZero(o.l) && allZero(o.r);
     }());
-    check("SSGS: volume 64 halves the level",
+    check("SSGEX: volume 64 halves the level",
           std::fabs(rms(volume(64).l) / rms(center.l) - 0.5) < 0.01);
-    check("SSGS: volumes above 128 are held at 128",
+    check("SSGEX: volumes above 128 are held at 128",
           same(volume(129), center) && same(volume(255), center));
 
     // チャンネルごと、系統ごとに独立している
-    Out aLeft  = play("SSGS", concat({ ssgPan(0, 0, 1), ssgTone(0x00, 0) }));
-    Out bRight = play("SSGS", concat({ ssgPan(0, 1, 255), ssgTone(0x00, 1) }));
-    Out both   = play("SSGS", concat({ ssgPan(0, 0, 1), ssgPan(0, 1, 255), ssgTone(0x00, 0),
+    Out aLeft  = play("SSGEX", concat({ ssgPan(0, 0, 1), ssgTone(0x00, 0) }));
+    Out bRight = play("SSGEX", concat({ ssgPan(0, 1, 255), ssgTone(0x00, 1) }));
+    Out both   = play("SSGEX", concat({ ssgPan(0, 0, 1), ssgPan(0, 1, 255), ssgTone(0x00, 0),
                                        ssgTone(0x00, 1), { { 0x07, 0x3C } } }));
-    check("SSGS: each channel of a unit has its own position",
+    check("SSGEX: each channel of a unit has its own position",
           both.l == aLeft.l && both.r == bRight.r);
-    Out bOnly = play("SSGS", ssgTone(0x00, 1));
-    check("SSGS: each channel of a unit has its own volume",
-          same(play("SSGS", concat({ ssgVolume(0, 0, 0), ssgTone(0x00, 0),
+    Out bOnly = play("SSGEX", ssgTone(0x00, 1));
+    check("SSGEX: each channel of a unit has its own volume",
+          same(play("SSGEX", concat({ ssgVolume(0, 0, 0), ssgTone(0x00, 0),
                                      ssgTone(0x00, 1), { { 0x07, 0x3C } } })), bOnly));
-    Out unit2 = play("SSGS", ssgTone(0x10, 0));
-    check("SSGS: the volumes of SSG-1 (20h-22h) and SSG-2 (24h-26h) are separate",
+    Out unit2 = play("SSGEX", ssgTone(0x10, 0));
+    check("SSGEX: the volumes of SSG-1 (20h-22h) and SSG-2 (24h-26h) are separate",
           audible(unit2) &&
-          same(play("SSGS", concat({ ssgVolume(0, 0, 0), ssgTone(0x10, 0) })), unit2) &&
-          silent(play("SSGS", concat({ ssgVolume(1, 0, 0), ssgTone(0x10, 0) }))));
+          same(play("SSGEX", concat({ ssgVolume(0, 0, 0), ssgTone(0x10, 0) })), unit2) &&
+          silent(play("SSGEX", concat({ ssgVolume(1, 0, 0), ssgTone(0x10, 0) }))));
     // 2 系統は足し合わされるだけなので、同時に鳴らした出力は別々に鳴らした和になる
-    Out unit1Only = play("SSGS", ssgNotes(0x00));
-    Out unit2Only = play("SSGS", ssgTone(0x10, 1));
-    Out together  = play("SSGS", concat({ ssgNotes(0x00), ssgTone(0x10, 1) }));
+    Out unit1Only = play("SSGEX", ssgNotes(0x00));
+    Out unit2Only = play("SSGEX", ssgTone(0x10, 1));
+    Out together  = play("SSGEX", concat({ ssgNotes(0x00), ssgTone(0x10, 1) }));
     double d = 0.0;
     for (size_t i = 0; i < together.l.size(); ++i)
         d = std::fmax(d, std::fabs((double)together.l[i] - ((double)unit1Only.l[i] + unit2Only.l[i])));
-    check("SSGS: SSG-1 and SSG-2 are separate units that sound together",
+    check("SSGEX: SSG-1 and SSG-2 are separate units that sound together",
           audible(unit2Only) && d < 1e-6);
-    Out unit2Right = play("SSGS", concat({ ssgPan(1, 0, 255), ssgTone(0x10, 0) }));
-    Out units = play("SSGS", concat({ ssgPan(0, 0, 1), ssgTone(0x00, 0),
+    Out unit2Right = play("SSGEX", concat({ ssgPan(1, 0, 255), ssgTone(0x10, 0) }));
+    Out units = play("SSGEX", concat({ ssgPan(0, 0, 1), ssgTone(0x00, 0),
                                       ssgPan(1, 0, 255), ssgTone(0x10, 0) }));
-    check("SSGS: the two units sit on opposite sides at once",
+    check("SSGEX: the two units sit on opposite sides at once",
           units.l == aLeft.l && units.r == unit2Right.r);
 
     // 未接続: GPIO (0Eh/0Fh、1Eh/1Fh。1Fh の下位 4bit は基板の LED)、
@@ -918,8 +924,8 @@ void testSsgs() {
     Regs junk;
     for (int r : { 0x0E, 0x0F, 0x1E, 0x1F, 0x23, 0x27, 0x2B, 0x2F }) junk.push_back({ (uint8_t)r, 0xFF });
     for (int r = 0x30; r < 0x100; ++r) junk.push_back({ (uint8_t)r, 0xFF });
-    check("SSGS: registers it does not have change nothing",
-          same(play("SSGS", concat({ junk, ssgNotes(0x00) })), unit1Only));
+    check("SSGEX: registers it does not have change nothing",
+          same(play("SSGEX", concat({ junk, ssgNotes(0x00) })), unit1Only));
 }
 
 // 標準の SCC の窓 (port 0)。5 チャンネルに別々の波形・周波数・音量を入れ、

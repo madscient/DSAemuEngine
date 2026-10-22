@@ -6,7 +6,7 @@
 //   emu8950  (Y8950/YM3526/YM3812)   → Y8950 / OPL / OPL2 チップ
 //   emu2212  (Konami SCC)             → SCC / SCCP チップ
 //   emu76489 (SN76489 DCSG)          → DCSG チップ
-//   src/y8960 (emu8950 / emu2413 / emu2149 / emu2212 のフォーク) → OPL2EX / OPLLEX / SSGS / SCCEX チップ (Y8960)
+//   src/y8960 (emu8950 / emu2413 / emu2149 / emu2212 のフォーク) → OPL2EX / OPLLEX / SSGEX / SCCEX チップ (Y8960)
 
 #include "FmEngineApi.h"
 #include "../extern/emu2149/emu2149.h"
@@ -52,7 +52,7 @@ enum class ChipKind {
     DCSG,   // emu76489 SN76489
     OPL2EX, // y8960    Y8960 拡張 OPL2 (YM3812 + ADPCM-B)
     OPLLEX, // y8960    Y8960 拡張 OPLL (チャンネル別プリセット音色バンク)
-    SSGS,   // y8960    Y8960 SSGS (YM2149 x2 + チャンネルごとの音量と定位)
+    SSGEX,  // y8960    Y8960 SSG 部 (YM2149 x2 + チャンネルごとの音量と定位)
     SCCEX,  // y8960    Y8960 SCC (標準の SCC + チャンネルごとの定位)
 };
 
@@ -207,7 +207,7 @@ static const ChipDesc kChipTable[] = {
     { "DCSG",   ChipKind::DCSG   },  // SN76489
     { "OPL2EX", ChipKind::OPL2EX },  // Y8960 拡張 OPL2
     { "OPLLEX", ChipKind::OPLLEX },  // Y8960 拡張 OPLL
-    { "SSGS",   ChipKind::SSGS   },  // Y8960 SSGS
+    { "SSGEX",  ChipKind::SSGEX  },  // Y8960 SSG 部
     { "SCCEX",  ChipKind::SCCEX  },  // Y8960 SCC
 };
 static constexpr uint32_t kChipCount = (uint32_t)(sizeof(kChipTable) / sizeof(kChipTable[0]));
@@ -388,7 +388,7 @@ static std::unique_ptr<ChipEntry> createChip(
         SNG_reset(e->sng);
         break;
 
-    case ChipKind::SSGS:
+    case ChipKind::SSGEX:
         for (auto& unit : e->ssgs) {
             unit = Y8960SSG_new(e->clock, sample_rate);
             if (!unit) return nullptr;
@@ -450,7 +450,7 @@ static void chipWrite(ChipEntry& c, uint8_t reg, uint8_t val, uint32_t port) {
     case ChipKind::OPLLEX:
         Y8960OPLL_writeReg(c.opllex, reg, val);
         break;
-    case ChipKind::SSGS:
+    case ChipKind::SSGEX:
         // 00h-0Fh が SSG-1、10h-1Fh が SSG-2 の YM2149 のレジスタ。
         // 20h-2Fh は 4 個ずつ SSG-1 の音量、SSG-2 の音量、SSG-1 の定位、SSG-2 の定位で、
         // 各組の 4 個目は未接続。30h 以降も未接続
@@ -524,7 +524,7 @@ static void chipCalcStereo(ChipEntry& c, float& out_l, float& out_r) {
         buf[1] = sng_buf[1];
         break;
     }
-    case ChipKind::SSGS:
+    case ChipKind::SSGEX:
         for (auto* unit : c.ssgs) {
             int32_t unit_buf[2];
             Y8960SSG_calcStereo(unit, unit_buf);
