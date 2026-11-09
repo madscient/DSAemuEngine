@@ -129,6 +129,17 @@ if(DSAEMU_BUILD_TESTS)
         target_compile_options(y8960_scc_test PRIVATE /W3 /utf-8)
     endif()
     add_test(NAME y8960_scc_test COMMAND y8960_scc_test)
+
+    # Y8960 の ADPCM のコアを直接叩く (状態レジスタは API から読めないので、エンジン越しには確かめられない)
+    add_executable(y8960_adpcm_test
+        tests/y8960_adpcm_test.cpp
+        src/y8960/Y8960Opl2exAdpcm.c
+    )
+    target_include_directories(y8960_adpcm_test PRIVATE src/y8960)
+    if(MSVC)
+        target_compile_options(y8960_adpcm_test PRIVATE /W3 /utf-8)
+    endif()
+    add_test(NAME y8960_adpcm_test COMMAND y8960_adpcm_test)
 endif()
 
 # -------------------------------------------------------

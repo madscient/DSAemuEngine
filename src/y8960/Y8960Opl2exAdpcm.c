@@ -7,6 +7,11 @@
 
    How playback stops follows emu8950 v1.2.2: the output is 0 while nothing is
    playing, and a write to 07h without START stops playback.
+
+   PCM BSY follows the Y8960's RTL, which differs from the Y8950 (emu8950
+   v1.2.4 matches the Y8950, which keeps it after the end of a sample): it is
+   the START bit itself, so it drops when playback ends, when 07h is written
+   without START, and when RESET is set, even together with START (07h = 81h).
 */
 #include "Y8960Opl2exAdpcm.h"
 #include <memory.h>
@@ -196,6 +201,7 @@ void Y8960OPL_ADPCM_writeReg(Y8960OPL_ADPCM *_this, uint32_t adr, uint32_t data)
   case 0x07: /* START/REC/MEM DATA/REPEAT/SP-OFF/RESET */
     if (data & R07_RESET) {
       _this->play_start = 0;
+      _this->status &= ~STATUS_PCM_BSY;
       break;
     }
     if (data & R07_START) {
@@ -208,6 +214,7 @@ void Y8960OPL_ADPCM_writeReg(Y8960OPL_ADPCM *_this, uint32_t adr, uint32_t data)
       _this->status |= STATUS_PCM_BSY; 
     } else {
       _this->play_start = 0;
+      _this->status &= ~STATUS_PCM_BSY;
     }
     _this->reg[0x07] = data;
     break;

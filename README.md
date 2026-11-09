@@ -72,7 +72,8 @@ DSAemuEngine/
 │   └── y8960/                ← OPL2EX / OPLLEX / SSGEX / SCCEX 用のコア (emu8950 / emu2413 / emu2149 / emu2212 の改造版)
 └── tests/
     ├── api_test.cpp          ← DLL を実行時にロードして叩く試験
-    └── y8960_scc_test.cpp    ← SCCEX 用のコアを直接叩く試験
+    ├── y8960_scc_test.cpp    ← SCCEX 用のコアを直接叩く試験
+    └── y8960_adpcm_test.cpp  ← OPL2EX の ADPCM のコアを直接叩く試験
 ```
 
 ## セットアップ
@@ -106,9 +107,11 @@ cmake --build build --config Release
 
 ### 試験
 
-ビルドすると `api_test` と `y8960_scc_test` も作られます。`api_test` はビルドした共有ライブラリを
-実行時にロードし、エクスポートされた関数だけを通して振る舞いを確かめます。`y8960_scc_test` は
-`SCCEX` 用のコアを、元の emu2212 と並べて直接確かめます。
+ビルドすると `api_test`、`y8960_scc_test`、`y8960_adpcm_test` も作られます。`api_test` は
+ビルドした共有ライブラリを実行時にロードし、エクスポートされた関数だけを通して振る舞いを
+確かめます。`y8960_scc_test` は `SCCEX` 用のコアを、元の emu2212 と並べて直接確かめます。
+`y8960_adpcm_test` は `OPL2EX` の ADPCM のコアを直接叩き、API から読めない状態レジスタの
+PCM BSY を確かめます。
 
 ```bash
 ctest --test-dir build -C Release --output-on-failure
