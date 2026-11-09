@@ -67,6 +67,7 @@ AI がセッションをまたいで作業を引き継ぐための文書。利�
 **ユーザーに判断を仰いでいること**（§6）
 
 - OPL2EX の波形選択の細部を emu8950 と openMSX 系フォークのどちらに揃えるか（今は emu8950）
+- `OPL2EX` で `04h` の IRQ リセットが PCM BSY を消すか（今は消す。§6.12）
 - 仕様書の読み方でこちらが決めたこと（§6.9）。`SSGEX` の音量の則と 128 を超える値、
   `OPLLEX` の `0Fh`（TEST）、仕様書の `20～EF` の行。どれも実装後の報告で挙げた。
   2026-10-17 に `OPL2EX` のリズムの定位を足した（`OPLLEX` と同じ読み方）。2026-10-19 に
@@ -118,7 +119,7 @@ Y8960 の仕様の変更は、同じチップを扱う他のリポジトリ
 | 情報源 | 版 | 使ったもの | 役割 |
 |---|---|---|---|
 | madscient/blueMSX-plus_Y8960 | `9aa8a0a7` | `blueMSX/Src/SoundChips/Y8960OpllCore.{c,h}`（最終変更 `49df6d61`）、`doc/fork/y8960/implementation-plan.md` §3.3・§5.1・§5.2・§5.3・§9.11、`doc/fork/y8960/tests/ssgs-probe.c` の項目名 | OPLLEX のコードの出所。OPL2EX と SSGS は仕様判断だけを参照 |
-| madscient/openMSX_Y8960 | `main` `b5850635c` | `doc/fork/y8960/implementation-plan.md` §3.4・§3.4.1・§3.4.3・§3.6、`src/sound/Y8960OPL2.cc`・`Y8960Adpcm.cc`（最終変更 `7aa2a9684`）、`src/sound/Y8960SSGS.cc` | OPL2EX と SSGS の仕様判断の情報リソース。コードは取り込んでいない |
+| madscient/openMSX_Y8960 | `main` `b5850635c`。PCM BSY は `9e8cc02`（2026-11-09。§6.12） | `doc/fork/y8960/implementation-plan.md` §3.4・§3.4.1・§3.4.3・§3.6、`src/sound/Y8960OPL2.cc`・`Y8960Adpcm.cc`（最終変更 `7aa2a9684`）、`src/sound/Y8960SSGS.cc`。PCM BSY は `doc/fork/y8960/hardware-notes.md` の PCM_BSY の項、implementation-plan.md §8 の 2026-11-03 (5)、`src/sound/Y8960OPL2.cc` の `04h` | OPL2EX と SSGS の仕様判断の情報リソース。コードは取り込んでいない |
 | Y8960 の仕様書（ユーザーから受け取った xlsx。ファイルのプロパティの最終更新 2026-10-18） | 2026-10-19 受領（2026-10-16 に最終更新 2026-10-15 の版、2026-10-17 に最終更新 2026-10-17 の版を受領） | シート modules、MemoryMappedIO、ssg、OPLL-EX、OPL2+ADPCM、SCC、MIXIER、SerialSRAM Memory Map | **Y8960 のハードウェアの仕様の正**（2026-10-16 から）。リポジトリには置いていない（§7）。読み方で決めたことは §6.9、版ごとの差は §3.10 |
 | madscient/MsxSoundSuiteExtension | `356bd77` | `docs/y8960/hardware.md` | Y8960 を駆動するファームウェアが前提にしている仕様（クロック、OPLL-EX / OPL2-EX / SSGS のレジスタ）。SSGS のレジスタ配置と定位、OPLL-EX の定位は上の仕様書より前のもの（`05f30f6` で確かめた）。クロック（SSGS は 1.7897725MHz）は仕様書に無いので、ここを使っている |
 | madscient/EPSGemuEngine | `63c8834` | `README.md` の SSGS / 実装上の注意の節、`src/YmzSsg.{h,cpp}` | YMZ705 / YMZ732 の SSG 部の FmEngineApi 実装。パンの分配則、`clock` の意味、チップ名 `SSGS` を揃えた。コードは取り込んでいない（土台が MAME 系の ay8910 で、こちらは emu2149） |
@@ -1422,10 +1423,10 @@ submodule だけを `f82a22e`（v1.2.3）から `bf9f011`（v1.2.4）へ上げ�
 - Windows（x64 Release）でビルドでき、`ctest` は `api_test` と `y8960_scc_test` の 2 本とも
   通った（**確認済み**。`api_test` の項目数は数え直していない）
 - 素のチップの出力は変わらないはず（**確認済み(読解)**: submodule の `emuadpcm.c` で `status`
-  を読むのは `OPL_ADPCM_readReg` の戻り値だけで、`STATUS_PCM_BSY` は再生の制御に使われない）。
+  を読むのは `OPL_ADPCM_status` の戻り値だけで、`STATUS_PCM_BSY` は再生の制御に使われない）。
   前後の出力の比較（§5.10 の形）は取っていない
 
-**この確認では、素の `Y8950` / `OPL2` の PCM BSY が直ったことは分からない。** `FmEngineApi.h` に
+**この確認では、素の `Y8950` の PCM BSY が直ったことは分からない**（`OPL` / `OPL2` は ADPCM を持たない）。 `FmEngineApi.h` に
 status を読む関数は無く（**確認済み(読解)**: `Read` / `Status` / `status` で検索して 0 件）、
 `api_test` はこのビットを見ていない。通ったのは、既存の振る舞いが変わっていないことの確認に
 とどまる。素のコアの PCM BSY は試験していない（上流の修正で、`extern/` の submodule は改造しない）。
@@ -1435,7 +1436,9 @@ status を読む関数は無く（**確認済み(読解)**: `Read` / `Status` / 
 
 `OPL2EX` の ADPCM のコア（`Y8960Opl2exAdpcm.c`）を直接叩く試験（10 項目）。状態レジスタの
 PCM BSY を `Y8960OPL_ADPCM_status` で読む。開始番地 0・停止番地 `0003h`・DELTA-N 最大で、
-1 サンプルにつき 1 ニブル進める。Y8960 の RTL は openMSX_Y8960 の文書の記述で、原本は
+1 サンプルにつき 1 ニブル進める。再生は `07h` = A0h（メモリからの再生）で始める。RTL では
+START だけの 80h は CPU からの直接合成になる（openMSX_Y8960 の hardware-notes.md）。フォークは
+`07h` の b5 を見ないので結果は同じ。Y8960 の RTL は openMSX_Y8960 の文書の記述で、原本は
 読んでいない（§6.12）。
 
 項目: リセット直後は 0、START で 1、再生中は 1 のまま、一回再生の終わりで 0（EOS が立つ）、
@@ -1458,6 +1461,9 @@ PCM BSY を `Y8960OPL_ADPCM_status` で読む。開始番地 0・停止番地 `0
 
 `ctest` は `api_test`、`y8960_scc_test`、`y8960_adpcm_test` の 3 本とも通った（Windows、
 Visual Studio、x64 Release。**確認済み**）。
+
+最初の版は再生を 80h で始めていた。同じ日のレビューの指摘で A0h に変え、7 通りを回し直して、
+同じ表のとおりに落ちることを確かめた（**確認済み**）。
 
 ## 6. 未決事項
 
@@ -1728,8 +1734,8 @@ MIXER に入る」。今の版の仕様書もそうなっている（§3.10）�
 **確認済み(読解)**。RTL とマニュアルの原本と、openMSX の issue #1124 は読んでいない）:
 
 - 実機の Y8950 では、PCM BSY は `07h` に書いた START のビットを写すだけ。一回再生が終わっても
-  下がらず、START と RESET を同時に書いても 1 のまま（openMSX の issue #1124 の測定。openMSX は
-  それに合わせている）
+  下がらず、START と RESET を同時に書いた `07h` = A1h でも 1 のまま（openMSX の issue #1124 の測定。
+  81h は測られていない。openMSX はそれに合わせている）
 - Y8960 の RTL とマニュアルは、PCM BSY を START そのものとし、一回再生の終わりで 0 に戻し、
   `07h` = 81h（START と RESET）では RESET が勝って 0 にする。実機の Y8950 とは違う
 - emu8950#16 は、openMSX_Y8960 の作業で、emu8950 が一回再生の終わりで BSY を下ろすのは実機の
@@ -1743,7 +1749,7 @@ MIXER に入る」。今の版の仕様書もそうなっている（§3.10）�
 
 直す前の `OPL2EX` と Y8960 の RTL の突き合わせ（**確認済み(読解)**: 直す前の
 `Y8960Opl2exAdpcm.c` の `writeReg` と `update_stage`。RTL は openMSX_Y8960 の文書の記述。
-RESET 単独の行は、その記述（START そのもの。81h は RESET が勝つ）からの導出）と、
+`07h` = 00h と RESET 単独の行は、その記述（START そのもの。81h は RESET が勝つ）からの導出）と、
 直した後（**確認済み**: `tests/y8960_adpcm_test.cpp`。§5.15）:
 
 | 場面 | Y8960 の RTL | `OPL2EX` の直す前 | 直した後 |
@@ -1755,6 +1761,12 @@ RESET 単独の行は、その記述（START そのもの。81h は RESET が勝
 
 直した所は `Y8960Opl2exAdpcm.c` の `writeReg` の 2 行（RESET の分岐と、START の無い書き込みの
 分岐で BSY を下ろす）。
+
+**未決**（2026-11-09。レビューの指摘）: `04h` の IRQ リセットで PCM BSY を消すか。フォークは今、
+`Y8960OPL_ADPCM_resetStatus` が status を 0 にするので、再生中でも消える（**確認済み(読解)**:
+`Y8960Opl2exCore.c` の `04h`）。openMSX_Y8960 は IRQ リセットで `resetStatus(0x78)`（T1・T2・EOS・
+BUF_RDY）だけを消し、PCM BSY は残す（**確認済み(読解)**: `9e8cc02` の `Y8960OPL2.cc` の `04h`）。
+その行が RTL で確かめられたかは、openMSX_Y8960 の文書に記述が無い。表と試験にこの場面は無い
 
 **前提**: openMSX_Y8960 の文書の記述が Y8960 の RTL と合っている限り成立する。原本（`adpcm.v`。
 文書は `308-318, 348-356` と書く）は読んでいない。RTL との突き合わせは openMSX_Y8960 の側で
@@ -2133,6 +2145,9 @@ START、RESET の優先、一回再生の終わりを直す。やり直す値段
    コアを直接叩く試験 `tests/y8960_adpcm_test.cpp`（10 項目）を足して CTest に登録した。変異 M0-M6
    で、落ちる項目が予測と一致した（§5.15）。README の試験の節とファイル構成を直した
 7. この文書に §0・§3.2・§5.14・§5.15・§6.12・§7・§9.5 を書いた
+8. 文脈を持たない別のエージェントに、3 コミットの差分と報告をレビューさせた。指摘で、この文書の
+   誤り（§5.14 の関数名、`OPL2` の扱い、§9.5 の食い違い、§2 の版、81h、導出の注記）と、試験の
+   再生の開始（80h → A0h）を直した。`04h` の IRQ リセットは未決としてユーザーに聞いた（§6.12）
 
 ## 9. 上流へ報告した不具合
 
@@ -2450,7 +2465,7 @@ PR 7 件、emu8950 は issue 3 件と PR 1 件）のタイトルを見た範囲�
   sample, but not by $07 = 00h"）。起票は openMSX_Y8960 の作業で、emu8950 が一回再生の終わりで
   BSY を下ろすのは実機の Y8950 と違う、と分かったことによる（§6.12。出所もそこ）。この issue の
   本文は読んでいない。9.4 の emu8950#8 の項は PCM-BSY に触れていない
-- **上流の対応**（**確認済み(読解)**: 2026-11-09 に `gh` で issue・PR #17 の本文と差分を読んだ。
+- **上流の対応**（**確認済み(読解)**: 2026-11-09 に `gh` で issue の状態とコメント、PR #17 の本文と差分を読んだ。
   再現は走らせていない）: PR #17「Make PCM BSY follow the START bit of $07」で直り、`develop` に
   入って issue は closed。マージコミットは `98f5fb1`、続けて v1.2.4（`bf9f011`）が付いた。
   PR の作者とマージしたのは `dsa-agent` というアカウント（2026-11-09 に作られた）

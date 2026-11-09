@@ -31,7 +31,11 @@ constexpr uint32_t kClock = 3579545;
 // 07h のビット
 constexpr uint8_t kReset = 0x01;
 constexpr uint8_t kRepeat = 0x10;
+constexpr uint8_t kMemoryData = 0x20;
 constexpr uint8_t kStart = 0x80;
+
+// メモリからの再生。RTL では START だけの 80h は CPU からの直接合成になる
+constexpr uint8_t kPlay = kStart | kMemoryData;
 
 // 状態レジスタのビット
 constexpr uint8_t kBsy = 0x01;
@@ -90,34 +94,34 @@ void testBsy() {
     }
     {
         Adpcm d;
-        d.write(0x07, kStart);
+        d.write(0x07, kPlay);
         check("START raises PCM BSY", d.bsy());
         d.run(10);
         check("PCM BSY stays up while the sample plays", d.bsy() && !d.eos());
     }
     {
         Adpcm d;
-        d.write(0x07, kStart);
+        d.write(0x07, kPlay);
         bool ended = d.runToEnd();
         check("PCM BSY drops when a one-shot sample ends", ended && !d.bsy() && d.eos());
     }
     {
         Adpcm d;
-        d.write(0x07, kStart);
+        d.write(0x07, kPlay);
         d.run(5);
         d.write(0x07, 0x00);
         check("07h without START drops PCM BSY while playing", !d.bsy() && !d.eos());
     }
     {
         Adpcm d;
-        d.write(0x07, kStart);
+        d.write(0x07, kPlay);
         d.run(5);
         d.write(0x07, kReset);
         check("RESET alone drops PCM BSY while playing", !d.bsy() && !d.eos());
     }
     {
         Adpcm d;
-        d.write(0x07, kStart);
+        d.write(0x07, kPlay);
         d.run(5);
         d.write(0x07, kStart | kReset);
         check("RESET wins over START: 07h = 81h drops PCM BSY", !d.bsy() && !d.eos());
@@ -129,15 +133,15 @@ void testBsy() {
     }
     {
         Adpcm d;
-        d.write(0x07, kStart | kRepeat);
+        d.write(0x07, kPlay | kRepeat);
         d.run(200);
         check("PCM BSY stays up through the end address while repeating", d.bsy() && !d.eos());
     }
     {
         Adpcm d;
-        d.write(0x07, kStart);
+        d.write(0x07, kPlay);
         d.runToEnd();
-        d.write(0x07, kStart);
+        d.write(0x07, kPlay);
         check("START raises PCM BSY again after the sample ended", d.bsy());
     }
 }
