@@ -134,6 +134,7 @@ if(DSAEMU_BUILD_TESTS)
     add_executable(y8960_adpcm_test
         tests/y8960_adpcm_test.cpp
         src/y8960/Y8960Opl2exAdpcm.c
+        src/y8960/Y8960Opl2exCore.c
     )
     target_include_directories(y8960_adpcm_test PRIVATE src/y8960)
     if(MSVC)

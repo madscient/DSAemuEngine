@@ -4,8 +4,8 @@
 // 失敗した項目があれば終了コードが 0 以外になる。
 //
 // 状態レジスタの PCM BSY は FmEngineApi から読めないので、api_test では確かめられない。
-// Y8960 の RTL は PCM BSY を START のビットそのものとして扱い、一回再生の終わり、
-// START の無い 07h の書き込み、RESET (START と同時でも) で 0 に戻す。実機の Y8950 とは違う。
+// Y8960 の RTL では、PCM BSY は一回再生の終わり、START の無い 07h の書き込み、RESET
+// (START と同時でも) で 0 に戻り、04h の IRQ リセットでは残る。実機の Y8950 とは違う。
 
 #include <cstdint>
 #include <cstdio>
@@ -16,6 +16,7 @@
 extern "C" {
 #include "Y8960Opl2exAdpcm.h"
 }
+#include "Y8960Opl2exCore.h"
 
 namespace {
 
@@ -71,6 +72,7 @@ public:
     }
     bool bsy() { return (Y8960OPL_ADPCM_status(core_) & kBsy) != 0; }
     bool eos() { return (Y8960OPL_ADPCM_status(core_) & kEos) != 0; }
+    void resetStatus() { Y8960OPL_ADPCM_resetStatus(core_); }
 
     // EOS が立つまで進める。上限まで進んでも立たなければ false
     bool runToEnd() {
@@ -144,12 +146,44 @@ void testBsy() {
         d.write(0x07, kPlay);
         check("START raises PCM BSY again after the sample ended", d.bsy());
     }
+    {
+        // 一回再生で EOS を立ててから、繰り返し再生中に IRQ リセットする
+        Adpcm d;
+        d.write(0x07, kPlay);
+        d.runToEnd();
+        d.write(0x07, kPlay | kRepeat);
+        d.run(10);
+        bool before = d.bsy() && d.eos();
+        d.resetStatus();
+        check("the IRQ reset clears EOS but keeps PCM BSY while playing",
+              before && d.bsy() && !d.eos());
+    }
+}
+
+// 04h の IRQ リセットはコアの書き込みから ADPCM に届くので、コアを通して確かめる
+void testIrqResetThroughCore() {
+    std::vector<uint8_t> mem(64, 0x5A);
+    Y8960OPL_ADPCM_REGION region = { 0, (uint32_t)mem.size(), mem.data(), 0 };
+    Y8960OPL* opl = Y8960OPL_new(kClock, 49716);
+    Y8960OPL_setADPCMMemoryMap(opl, &region, 1);
+    const uint8_t regs[][2] = {
+        { 0x09, 0x00 }, { 0x0A, 0x00 }, { 0x0B, 0x03 }, { 0x0C, 0x00 },
+        { 0x10, 0xFF }, { 0x11, 0xFF }, { 0x12, 0xFF }, { 0x07, kPlay },
+    };
+    for (const auto& r : regs) Y8960OPL_writeReg(opl, r[0], r[1]);
+    for (int i = 0; i < 5; ++i) Y8960OPL_calc(opl);
+    bool before = (Y8960OPL_status(opl) & kBsy) != 0;
+    Y8960OPL_writeReg(opl, 0x04, 0x80);
+    bool after = (Y8960OPL_status(opl) & kBsy) != 0;
+    Y8960OPL_delete(opl);
+    check("04h = 80h (IRQ reset) keeps PCM BSY while playing", before && after);
 }
 
 }  // namespace
 
 int main() {
     testBsy();
+    testIrqResetThroughCore();
 
     std::printf("%s (%d failed)\n", g_fails ? "FAILED" : "PASSED", g_fails);
     return g_fails ? 1 : 0;

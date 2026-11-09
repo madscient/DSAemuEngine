@@ -9,9 +9,10 @@
    playing, and a write to 07h without START stops playback.
 
    PCM BSY follows the Y8960's RTL, which differs from the Y8950 (emu8950
-   v1.2.4 matches the Y8950, which keeps it after the end of a sample): it is
-   the START bit itself, so it drops when playback ends, when 07h is written
-   without START, and when RESET is set, even together with START (07h = 81h).
+   v1.2.4 matches the Y8950, which keeps it after the end of a sample): it
+   drops when a one-shot sample ends, when 07h is written without START, and
+   when RESET is set, even together with START (07h = 81h). The IRQ reset of
+   04h clears the flags but leaves PCM BSY alone.
 */
 #include "Y8960Opl2exAdpcm.h"
 #include <memory.h>
@@ -286,7 +287,8 @@ uint8_t Y8960OPL_ADPCM_status(Y8960OPL_ADPCM *_this) {
 }
 
 void Y8960OPL_ADPCM_resetStatus(Y8960OPL_ADPCM *_this) {
-  _this->status = 0;
+  /* PCM BSY is not a flag: see the top of this file. */
+  _this->status &= STATUS_PCM_BSY;
 }
 
 void Y8960OPL_ADPCM_setMemoryMap(Y8960OPL_ADPCM *_this, const Y8960OPL_ADPCM_REGION *regions, uint32_t count) {
