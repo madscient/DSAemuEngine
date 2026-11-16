@@ -60,9 +60,12 @@ internal_refresh (Y8960SCC * scc)
 {
   if (scc->quality)
   {
+    /* An output sample lasts clk units and an SCC step (clk / 2) lasts
+    ** rate * 2, so the ratio is exact. emu2212 takes 2^31 / (clk / 2), which
+    ** truncates 1199.87 to 1199 at 3.579545 MHz and plays 0.07% sharp. */
     scc->base_incr = 2 << GETA_BITS;
-    scc->realstep = (uint32_t) ((1 << 31) / scc->rate);
-    scc->sccstep = (uint32_t) ((1 << 31) / (scc->clk / 2));
+    scc->realstep = scc->clk;
+    scc->sccstep = scc->rate * 2;
     scc->scctime = 0;
   }
   else
@@ -379,6 +382,11 @@ static inline void
 write_standard (Y8960SCC * scc, uint32_t adr, uint32_t val)
 {
   adr &= 0xFF;
+
+  /* 9890h-989Fh mirror 9880h-988Fh in the Y8960's specification and RTL
+  ** (openMSX does the same for the Konami SCC). emu2212 drops them. */
+  if (0x90 <= adr && adr < 0xA0)
+    adr -= 0x10;
 
   if (adr < 0x80)               /* wave */
   {

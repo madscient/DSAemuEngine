@@ -303,14 +303,6 @@ bool sameOnLeft(const Out& ex, const Out& plain) {
     return ex.l == plain.l && allZero(ex.r);
 }
 
-// 書き込みの前に OPL2EX を左端に置く
-std::function<void(Engine&, uint32_t)> hardLeft(const std::function<void(Engine&, uint32_t)>& setup) {
-    return [setup](Engine& e, uint32_t id) {
-        e.write(id, opl2exHardLeft());
-        setup(e, id);
-    };
-}
-
 // ADPCM の試験データ。中身に意味は無く、鳴りさえすればよい
 std::vector<uint8_t> adpcmData(size_t size) {
     std::vector<uint8_t> d(size);
@@ -321,20 +313,35 @@ std::vector<uint8_t> adpcmData(size_t size) {
 
 constexpr uint32_t kAdpcmBytes = 4096;
 
-// reg08 を書いてから開始・終了アドレスを書き、再生を始める
-// start と bytes は 256K RAM モードの番地 (4 バイト単位で数える)。
-// DELTA-N が 8000h なので、既定の bytes は 0.33 秒ぶんで、kFrames では鳴り終わらない
-Regs adpcmPlay(uint8_t reg08, uint32_t start = 0, uint32_t bytes = kAdpcmBytes) {
+// 開始・終了アドレス。start と bytes は 256K RAM モードの番地 (4 バイト単位で数える)
+Regs adpcmRange(uint32_t start, uint32_t bytes) {
     const uint32_t from = start / 4;
     const uint32_t stop = (start + bytes) / 4 - 1;
     return {
-        { 0x08, reg08 },
         { 0x09, (uint8_t)(from & 0xFF) }, { 0x0A, (uint8_t)(from >> 8) },
         { 0x0B, (uint8_t)(stop & 0xFF) }, { 0x0C, (uint8_t)(stop >> 8) },
-        { 0x10, 0x00 }, { 0x11, 0x80 },
-        { 0x12, 0xFF },
-        { 0x07, 0x80 },
     };
+}
+
+// reg08 を書いてから開始・終了アドレスを書き、メモリからの再生 (07h = A0h) を始める。
+// OPL2EX (Y8960 の RTL) では START だけの 80h は CPU からの直接合成になる。Y8950
+// (emu8950) は 07h の MEMORY DATA を見ないので、どちらでも同じ。
+// DELTA-N が 8000h なので、既定の bytes は 0.33 秒ぶんで、kFrames では鳴り終わらない
+Regs adpcmPlay(uint8_t reg08, uint32_t start = 0, uint32_t bytes = kAdpcmBytes, uint8_t reg07 = 0xA0) {
+    return concat({
+        { { 0x08, reg08 } },
+        adpcmRange(start, bytes),
+        { { 0x10, 0x00 }, { 0x11, 0x80 }, { 0x12, 0xFF }, { 0x07, reg07 } },
+    });
+}
+
+// 07h の REC と MEMORY DATA を立て、0Fh から 0 番地にサンプルを書き込む。
+// OPL2EX は終了アドレスまでしか書かないので、先に範囲を書く
+Regs adpcmWrite(const std::vector<uint8_t>& data) {
+    Regs r = concat({ { { 0x08, 0x00 } }, adpcmRange(0, (uint32_t)data.size()), { { 0x07, 0x60 } } });
+    for (uint8_t b : data) r.push_back({ 0x0F, b });
+    r.push_back({ 0x07, 0x00 });
+    return r;
 }
 
 std::function<void(Engine&, uint32_t)> withAdpcm(const Regs& regs, bool load = true) {
@@ -562,8 +569,8 @@ void testOpllexPan() {
     Out left = panned(1), right = panned(255);
     check("OPLLEX: a channel sounds on both sides alike until 50h-58h are written",
           audible(center) && center.l == center.r);
-    check("OPLLEX: pan 128 is the centre, and so is the undefined 0",
-          same(panned(128), center) && same(panned(0), center));
+    check("OPLLEX: pan 128 is the centre, and the undefined 0 is hard left like 1",
+          same(panned(128), center) && same(panned(0), left) && !same(left, center));
     // 左端の倍率はちょうど 1 なので、素の OPLL の出力そのものになる。
     // 素の OPLL はコアが L と R を同じ位相で取るので、レート変換の位相もここで見ている
     Out opll = play("OPLL", note);
@@ -618,51 +625,89 @@ void testConverterPhase() {
     }
 }
 
+// BDh を書く前に extra を差し込む。鍵を押す前に音色を変えるため
+Regs beforeKeys(Regs notes, const Regs& extra) {
+    notes.insert(notes.end() - 1, extra.begin(), extra.end());
+    return notes;
+}
+
+// OPL2EX の FM は、Y8960 の RTL に合わせたところ (CY の位相、リズムの BD の CON = 1、
+// 01h の扱い) のほかは素の OPL2 と同じ
 void testOpl2exFm() {
-    Out opl2   = play("OPL2",   oplNotes(true));
-    Out opl2ex = play("OPL2EX", concat({ opl2exHardLeft(), oplNotes(true) }));
-    Out plain  = play("OPL2",   oplNotes(false));
-    check("OPL2EX: FM with waveform select sounds exactly as on the plain OPL2",
+    constexpr uint8_t kNoCymbal = 0x1F & ~0x02;
+    Out opl2   = play("OPL2",   oplNotes(true, true, kNoCymbal));
+    Out opl2ex = play("OPL2EX", concat({ opl2exHardLeft(), oplNotes(true, true, kNoCymbal) }));
+    Out plain  = play("OPL2",   oplNotes(false, true, kNoCymbal));
+    check("OPL2EX: FM without the top cymbal sounds exactly as on the plain OPL2",
           rms(opl2ex.l) > kSilent && sameOnLeft(opl2ex, opl2));
     check("  (the waveform select is in effect in that comparison)",
           maxDiff(opl2.l, plain.l) > kSilent);
-    check("OPL2EX: with 01h b5 clear it also matches the plain OPL2",
-          sameOnLeft(play("OPL2EX", concat({ opl2exHardLeft(), oplNotes(false) })), plain));
     check("  (the Y8950 ignores waveform select, so it differs there)",
-          maxDiff(play("Y8950", oplNotes(true)).l, opl2.l) > kSilent);
+          maxDiff(play("Y8950", oplNotes(true, true, kNoCymbal)).l, opl2.l) > kSilent);
+
+    // CY の位相は 080h / 280h で、サインの 45 度。素の OPL2 (100h / 300h) は頂点
+    Out cyEx = play("OPL2EX", concat({ opl2exHardLeft(), oplNotes(false, false, 0x02) }));
+    Out cyPlain = play("OPL2", oplNotes(false, false, 0x02));
+    check("OPL2EX: the top cymbal is sin 45 degrees of the plain OPL2's (080h / 280h)",
+          rms(cyPlain.l) > kSilent && std::fabs(rms(cyEx.l) / rms(cyPlain.l) - kCentreGain) < 0.01);
+    // 符号は 280h と 300h で同じく負、080h と 100h で正なので、波形は素の OPL2 と比例する
+    double sxy = 0.0;
+    for (size_t i = 0; i < cyEx.l.size(); ++i) sxy += (double)cyEx.l[i] * cyPlain.l[i];
+    const double corr = sxy / (rms(cyEx.l) * rms(cyPlain.l) * (double)cyEx.l.size());
+    check("  (and it follows the plain OPL2's waveform sign for sign)", corr > 0.99);
+
+    // b5 を 0 にしている間に書いた波形は憶えられ、b5 を立てると効く
+    const Regs late = concat({ oplNotes(false, true, kNoCymbal), { { 0x01, 0x20 } } });
+    check("OPL2EX: waveforms written while 01h b5 is 0 take effect when b5 is set",
+          sameOnLeft(play("OPL2EX", concat({ opl2exHardLeft(), late })), opl2));
+    check("  (the plain OPL2 drops them)", same(play("OPL2", late), plain));
+    const Regs cleared = concat({ oplNotes(true, true, kNoCymbal), { { 0x01, 0x00 } } });
+    check("OPL2EX: clearing 01h b5 turns every slot back to a sine",
+          sameOnLeft(play("OPL2EX", concat({ opl2exHardLeft(), cleared })), plain));
+    check("  (the plain OPL2 keeps the waveforms)", maxDiff(play("OPL2", cleared).l, plain.l) > kSilent);
+
+    // 01h の b5 のほか (TEST) は効かない
+    const Regs test = concat({ oplNotes(true, true, kNoCymbal), { { 0x01, 0x2F } } });
+    check("OPL2EX: the test bits of 01h change nothing",
+          sameOnLeft(play("OPL2EX", concat({ opl2exHardLeft(), test })), opl2));
+    check("  (on the plain OPL2 they do)", maxDiff(play("OPL2", test).l, opl2.l) > kSilent);
+
+    // リズムの BD で CON = 1 (C6h = 09h) なら、鳴るのはキャリアだけ。変調器を AR = 0 で
+    // 黙らせても同じ音になる
+    const Regs bd = beforeKeys(oplNotes(false, false, 0x10), { { 0xC6, 0x09 } });
+    const Regs bdMuted = beforeKeys(bd, { { 0x70, 0x04 } });
+    Out bdEx = play("OPL2EX", bd);
+    check("OPL2EX: with the rhythm on and CON = 1 the BD is the carrier alone",
+          audible(bdEx) && same(bdEx, play("OPL2EX", bdMuted)));
+    check("  (the plain OPL2 adds the modulator)",
+          maxDiff(play("OPL2", bd).l, play("OPL2", bdMuted).l) > kSilent);
 }
 
 void testOpl2exAdpcm() {
-    Out y8950  = play("Y8950",  withAdpcm(adpcmPlay(0x00)));
     Out opl2ex = play("OPL2EX", withAdpcm(adpcmPlay(0x00)));
-    check("OPL2EX: ADPCM plays exactly as on the Y8950",
-          audible(opl2ex) && sameOnLeft(play("OPL2EX", hardLeft(withAdpcm(adpcmPlay(0x00)))), y8950));
+    Out empty = play("OPL2EX", withAdpcm(adpcmPlay(0x00), false));
+    check("OPL2EX: the ADPCM plays", audible(opl2ex));
     check("  (the plain OPL2 has no ADPCM)", silent(play("OPL2", withAdpcm(adpcmPlay(0x00)))));
 
-    check("OPL2EX: bit 0 of 08h (ROM) still plays from RAM",
-          same(play("OPL2EX", withAdpcm(adpcmPlay(0x01))), opl2ex));
-    // 空の ROM を ADPCM として復号すると直流が積み上がるので、無音ではなく差で見る
-    check("  (on the Y8950 the same bit switches to the empty ROM)",
-          maxDiff(play("Y8950", withAdpcm(adpcmPlay(0x01))).l, y8950.l) > kSilent);
+    // 空のメモリも 0 のニブルとして復号されて直流が積み上がるので、無音ではなく空のときと比べる
+    check("OPL2EX: bit 0 of 08h (ROM) makes the sample memory read 0",
+          same(play("OPL2EX", withAdpcm(adpcmPlay(0x01))), empty) && maxDiff(empty.l, opl2ex.l) > kSilent);
 
-    // 07h の REC と MEMORY DATA を立てて 0Fh から書き込む経路
     auto byRegisters = [](Engine& e, uint32_t id) {
-        Regs r = { { 0x07, 0x60 } };
-        for (uint8_t b : adpcmData(kAdpcmBytes)) r.push_back({ 0x0F, b });
-        r.push_back({ 0x07, 0x00 });
-        e.write(id, r);
+        e.write(id, adpcmWrite(adpcmData(kAdpcmBytes)));
         e.write(id, adpcmPlay(0x00));
     };
     check("OPL2EX: sample RAM written through 0Fh plays like SetMemory",
           same(play("OPL2EX", byRegisters), opl2ex));
 
-    // 07h を START だけで書き直したときと同じ出力になる
-    const Regs spOff = concat({ adpcmPlay(0x00), { { 0x07, 0x88 } } });
-    Out spOffEx = play("OPL2EX", withAdpcm(spOff));
-    check("OPL2EX: 07h b3 (SP-OFF) is ignored",
-          audible(spOffEx) &&
-          same(spOffEx, play("OPL2EX", withAdpcm(concat({ adpcmPlay(0x00), { { 0x07, 0x80 } } })))));
-    check("  (on the Y8950 the same bit mutes the ADPCM)", silent(play("Y8950", withAdpcm(spOff))));
+    check("OPL2EX: 07h b3 (SP-OFF) mutes the ADPCM",
+          allZero(play("OPL2EX", withAdpcm(adpcmPlay(0x00, 0, kAdpcmBytes, 0xA8))).l));
+
+    Regs no12h;
+    for (const Reg& r : adpcmPlay(0x00)) if (r.reg != 0x12) no12h.push_back(r);
+    check("OPL2EX: 12h is 255 after a reset", same(play("OPL2EX", withAdpcm(no12h)), opl2ex));
+    check("  (and 12h sets the level)",
+          maxDiff(play("OPL2EX", withAdpcm(concat({ adpcmPlay(0x00), { { 0x12, 0x40 } } }))).l, opl2ex.l) > kSilent);
 
     // Y8960 の仕様で廃止されたレジスタ: キーボード、プリスケール、DA / AD、I/O、PCM。
     // 書く値は、試験が 12h (EG-CTRL) と 10h (DELTA-N) に書く値と違うものにする
@@ -672,8 +717,6 @@ void testOpl2exAdpcm() {
     check("OPL2EX: the abolished registers change nothing",
           same(play("OPL2EX", withAdpcm(concat({ adpcmPlay(0x00), abolished }))), opl2ex));
 
-    // 空の RAM も直流を積み上げるので、データを入れずに鳴らしたものと比べる
-    Out empty = play("OPL2EX", withAdpcm(adpcmPlay(0x00), false));
     Out other = play("OPL2EX", [](Engine& e, uint32_t id) {
         uint32_t second = e.add("OPL2EX");
         auto data = adpcmData(kAdpcmBytes);
@@ -711,8 +754,8 @@ void testOpl2exPan() {
     Out left = panned(1), right = panned(255);
     check("OPL2EX: a channel sounds on both sides alike until F6h-FEh are written",
           audible(center) && center.l == center.r);
-    check("OPL2EX: pan 128 is the centre, and so is the undefined 0",
-          same(panned(128), center) && same(panned(0), center));
+    check("OPL2EX: pan 128 is the centre, and the undefined 0 is hard left like 1",
+          same(panned(128), center) && same(panned(0), left) && !same(left, center));
     check("OPL2EX: pan 1 is hard left, exactly the plain OPL2's output",
           sameOnLeft(left, play("OPL2", note)));
     check("OPL2EX: pan 255 is hard right", right.r == left.l && allZero(right.l));
@@ -750,26 +793,28 @@ void testOpl2exPan() {
 
     // ADPCM は FFh に従い、FM の定位とは別。
     // 後から書いたほうが勝つので、動かないはずの側を後に書く
-    Out y8950 = play("Y8950", withAdpcm(adpcmPlay(0x00)));
+    Out adpcmLeft = play("OPL2EX", withAdpcm(concat({ opl2exPan(9, 1), adpcmPlay(0x00) })));
     Out adpcmCenter = play("OPL2EX", withAdpcm(adpcmPlay(0x00)));
     check("OPL2EX: the ADPCM sounds on both sides alike until FFh is written",
           audible(adpcmCenter) && adpcmCenter.l == adpcmCenter.r);
     check("OPL2EX: FFh places the ADPCM, and F6h-FEh do not",
-          sameOnLeft(play("OPL2EX", withAdpcm(concat({ opl2exPan(9, 1), opl2exFmPan(255),
-                                                       adpcmPlay(0x00) }))), y8950));
+          rms(adpcmLeft.l) > kSilent && allZero(adpcmLeft.r) &&
+          same(play("OPL2EX", withAdpcm(concat({ opl2exPan(9, 1), opl2exFmPan(255), adpcmPlay(0x00) }))),
+               adpcmLeft));
     Out adpcmRight = play("OPL2EX", withAdpcm(concat({ opl2exPan(9, 255), adpcmPlay(0x00) })));
     check("OPL2EX: FFh 255 puts the ADPCM hard right",
-          adpcmRight.r == y8950.l && allZero(adpcmRight.l));
+          adpcmRight.r == adpcmLeft.l && allZero(adpcmRight.l));
     check("OPL2EX: the ADPCM centre is equal power too",
-          std::fabs(rms(adpcmCenter.l) / rms(y8950.l) - kCentreGain) < 0.01);
-    // メロディの 9 チャンネルとリズムの 5 音の両方で見る
+          std::fabs(rms(adpcmCenter.l) / rms(adpcmLeft.l) - kCentreGain) < 0.01);
+    // メロディの 9 チャンネルとリズムの 5 音の両方で見る。CY は素の OPL2 と位相が違うので外す
     Regs nine;
     for (int ch = 0; ch < 9; ++ch) nine = concat({ nine, oplNote(ch) });
     auto fmStays = [](const Regs& notes) {
         return sameOnLeft(play("OPL2EX", concat({ opl2exFmPan(1), opl2exPan(9, 255), notes })),
                           play("OPL2", notes));
     };
-    check("OPL2EX: FFh does not move the FM channels", fmStays(nine) && fmStays(oplNotes(true)));
+    check("OPL2EX: FFh does not move the FM channels",
+          fmStays(nine) && fmStays(oplNotes(true, true, 0x1F & ~0x02)));
 }
 
 // ADPCM は再生が止まると 0 を出す。最後に復号した値を出し続けると直流が乗る。
@@ -782,20 +827,16 @@ void testAdpcmStop() {
         { "clearing 07h b7 (START)",   kAdpcmBytes, { { 0x07, 0x00 } } },
     };
     for (const Stop& s : stops) {
-        std::vector<Out> tails;
         for (const char* chip : { "Y8950", "OPL2EX" }) {
             Engine e;
             uint32_t id = e.add(chip);
-            if (!std::strcmp(chip, "OPL2EX")) e.write(id, opl2exHardLeft());
             withAdpcm(adpcmPlay(0x00, 0, s.bytes))(e, id);
             Out head = e.render(200);
             e.write(id, s.regs);
-            tails.push_back(e.render());
+            Out tail = e.render();
             check(std::string(chip) + ": ADPCM puts out zero after " + s.what,
-                  rms(head.l) > kSilent && zeroInSecondHalf(tails.back()));
+                  rms(head.l) > kSilent && zeroInSecondHalf(tail));
         }
-        check(std::string("  (and the OPL2EX matches the Y8950 through ") + s.what + ")",
-              sameOnLeft(tails[1], tails[0]));
     }
 }
 
@@ -860,8 +901,8 @@ void testSsgs() {
     Out left = panned(1), right = panned(255);
     check("SSGEX: a channel sounds on both sides alike until a position is written",
           audible(center) && center.l == center.r);
-    check("SSGEX: pan 128 is the centre, and so is the undefined 0",
-          same(panned(128), center) && same(panned(0), center));
+    check("SSGEX: pan 128 is the centre, and the undefined 0 is hard left like 1",
+          same(panned(128), center) && same(panned(0), left) && !same(left, center));
     check("SSGEX: pan 1 is hard left", rms(left.l) > kSilent && allZero(left.r));
     check("SSGEX: pan 255 is hard right", right.r == left.l && allZero(right.l));
     check("SSGEX: the centre is equal power (cos 45 degrees each side)",
@@ -962,25 +1003,69 @@ Regs sccexPans(uint8_t pan) {
     return r;
 }
 
+// SCCEX はレート変換の比を正確に保ち、素の SCC (emu2212) は 2^31 / (clock / 2) の切り捨てで
+// 少し高く鳴る。両者が同じ音になるのは、emu2212 の比も正確になる組 (clock / 2 と rate が
+// ともに 2^31 を割り切る) に限るので、素の SCC との突き合わせはその組で行う
+constexpr uint32_t kExactClock = 4194304;  // clock / 2 = 2^21
+constexpr uint32_t kExactRate = 32768;     // 2^15
+
+Out playAt(const char* chip, uint32_t clock, uint32_t rate, const Regs& regs, uint32_t frames = kFrames) {
+    Engine e(rate);
+    uint32_t id = e.add(chip, clock);
+    e.write(id, regs);
+    return e.render(frames);
+}
+
+// 上向きのゼロ交差から周波数を測る。最初の 0.1 秒は飛ばす
+double measureFrequency(const std::vector<float>& v, uint32_t rate) {
+    double first = -1.0, last = -1.0;
+    long cycles = 0;
+    for (size_t n = rate / 10 + 1; n < v.size(); ++n) {
+        if (v[n - 1] < 0.0f && v[n] >= 0.0f) {
+            const double t = (double)(n - 1) + (double)(-v[n - 1]) / (double)(v[n] - v[n - 1]);
+            if (first < 0.0) first = t;
+            else ++cycles;
+            last = t;
+        }
+    }
+    return cycles / ((last - first) / rate);
+}
+
 void testSccex() {
-    Out scc = play("SCC", sccNotes());
-    Out left = play("SCCEX", concat({ sccexPans(1), sccNotes() }));
+    Out scc = playAt("SCC", kExactClock, kExactRate, sccNotes());
+    Out left = playAt("SCCEX", kExactClock, kExactRate, concat({ sccexPans(1), sccNotes() }));
     check("SCCEX: hard left sounds exactly as the plain SCC", audible(scc) && sameOnLeft(left, scc));
-    Out right = play("SCCEX", concat({ sccexPans(255), sccNotes() }));
+    Out right = playAt("SCCEX", kExactClock, kExactRate, concat({ sccexPans(255), sccNotes() }));
     check("SCCEX: pan 255 is hard right", right.r == scc.l && allZero(right.l));
-    Out slowScc = play("SCC", 1789772, sccNotes());
+    Out slowScc = playAt("SCC", kExactClock / 2, kExactRate, sccNotes());
     check("SCCEX: clock means the same as for the SCC chip",
-          sameOnLeft(play("SCCEX", 1789772, concat({ sccexPans(1), sccNotes() })), slowScc) &&
+          sameOnLeft(playAt("SCCEX", kExactClock / 2, kExactRate, concat({ sccexPans(1), sccNotes() })), slowScc) &&
           slowScc.l != scc.l);
+
+    // 3.579545 MHz・48 kHz で、CH.A の矩形波 (TP = 0FEh) が clock / (32 × (TP + 1)) で鳴る
+    const double expected = kClock / (32.0 * (0x0FE + 1));
+    const uint32_t twoSeconds = kRate * 2;
+    const double exHz = measureFrequency(playAt("SCCEX", kClock, kRate, sccNotes(0x01), twoSeconds).l, kRate);
+    const double plainHz = measureFrequency(playAt("SCC", kClock, kRate, sccNotes(0x01), twoSeconds).l, kRate);
+    check("SCCEX: at 3.579545 MHz the pitch is clock / (32 (TP + 1))", std::fabs(exHz / expected - 1.0) < 1e-4);
+    check("  (the plain SCC plays 0.07% sharp there)", plainHz / expected - 1.0 > 5e-4);
+
+    // 9890h-989Fh は 9880h-988Fh のミラー
+    Regs mirrored;
+    for (const Reg& r : sccNotes()) mirrored.push_back({ (uint8_t)(r.reg >= 0x80 ? r.reg + 0x10 : r.reg), r.val });
+    check("SCCEX: 9890h-989Fh mirror 9880h-988Fh",
+          same(play("SCCEX", mirrored), play("SCCEX", sccNotes())));
+    check("  (the plain SCC drops them)", silent(play("SCC", mirrored)));
 
     Out center = play("SCCEX", sccNotes());
     check("SCCEX: the channels sound on both sides alike until 9900h-9904h are written",
           audible(center) && center.l == center.r);
-    check("SCCEX: pan 128 is the centre, and so is the undefined 0",
+    const Out sccexLeft = play("SCCEX", concat({ sccexPans(1), sccNotes() }));
+    check("SCCEX: pan 128 is the centre, and the undefined 0 is hard left like 1",
           same(play("SCCEX", concat({ sccexPans(128), sccNotes() })), center) &&
-          same(play("SCCEX", concat({ sccexPans(0), sccNotes() })), center));
+          same(play("SCCEX", concat({ sccexPans(0), sccNotes() })), sccexLeft) && !same(sccexLeft, center));
     check("SCCEX: the centre is equal power (cos 45 degrees each side)",
-          std::fabs(rms(center.l) / rms(left.l) - kCentreGain) < 0.01);
+          std::fabs(rms(center.l) / rms(sccexLeft.l) - kCentreGain) < 0.01);
     Out p64 = play("SCCEX", concat({ sccexPan(0, 64), sccNotes(0x01) }));
     check("SCCEX: pan 64 leans left by the equal power law",
           std::fabs(rms(p64.r) / rms(p64.l) - panTan(64)) < 0.01);
@@ -989,9 +1074,9 @@ void testSccex() {
     // 分かれるかを見る。番地のずれとチャンネルの取り違えを捕まえる
     bool mapped = true;
     for (int k = 0; k < 5; ++k) {
-        Out split = play("SCCEX", concat({ sccexPans(255), sccexPan(k, 1), sccNotes() }));
-        Out only = play("SCC", sccNotes((uint8_t)(1 << k)));
-        Out rest = play("SCC", sccNotes((uint8_t)(0x1F & ~(1 << k))));
+        Out split = playAt("SCCEX", kExactClock, kExactRate, concat({ sccexPans(255), sccexPan(k, 1), sccNotes() }));
+        Out only = playAt("SCC", kExactClock, kExactRate, sccNotes((uint8_t)(1 << k)));
+        Out rest = playAt("SCC", kExactClock, kExactRate, sccNotes((uint8_t)(0x1F & ~(1 << k))));
         mapped = mapped && audible(only) && split.l == only.l && split.r == rest.l;
     }
     check("SCCEX: 9900h-9904h place channels A-E in that order", mapped);
@@ -1004,14 +1089,6 @@ void testSccex() {
         for (int r = 0; r < 5; ++r) junk.push_back({ (uint8_t)r, 0x01, port });
     check("SCCEX: port 1 past 04h and ports 2 and above change nothing",
           same(play("SCCEX", concat({ sccNotes(), junk })), center));
-}
-
-// 07h の REC と MEMORY DATA を立て、0Fh からサンプルを書き込む
-Regs adpcmWrite(const std::vector<uint8_t>& data) {
-    Regs r = { { 0x07, 0x60 } };
-    for (uint8_t b : data) r.push_back({ 0x0F, b });
-    r.push_back({ 0x07, 0x00 });
-    return r;
 }
 
 void testMemoryApi() {

@@ -5,8 +5,8 @@
 
    The specification fixes only the ends and the centre: 1 is hard left, 128
    the centre, 255 hard right, and 128 after reset. The law in between is equal
-   power, and 0, which the specification leaves out, is the centre. Both are
-   this emulator's choice, not the hardware's.
+   power, and 0, which the specification leaves out, is hard left like 1, as in
+   the Y8960's RTL (pan_lut), whose table is this law rounded to 1/256.
 */
 #ifndef _Y8960_PAN_H_
 #define _Y8960_PAN_H_
@@ -22,7 +22,7 @@ static inline void Y8960_panGain(uint8_t pan, double gain[2]) {
   double theta;
 
   if (pan == 0)
-    pan = Y8960_PAN_CENTER;
+    pan = 1;
   theta = (double)(pan - 1) / 254.0 * quarter;
   gain[0] = cos(theta);
   gain[1] = sin(theta);

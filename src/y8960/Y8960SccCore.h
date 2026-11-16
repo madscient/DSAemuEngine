@@ -11,6 +11,12 @@
 
    Y8960SCC_calcStereo applies the position per channel to the same channel
    outputs that Y8960SCC_calc sums. Y8960SCC_calc (mono) does not apply it.
+
+   Two fixes against emu2212: the rate converter (quality 1) keeps the ratio
+   of the output rate to the SCC's clock / 2 exact, where emu2212 plays
+   0.07% sharp at 3.579545 MHz; and in the standard SCC layout 9890h-989Fh
+   mirror 9880h-988Fh. At a clock and rate where emu2212's ratio is exact
+   (clock / 2 and rate both divide 2^31), the output matches emu2212.
 */
 #ifndef _Y8960_SCC_CORE_H_
 #define _Y8960_SCC_CORE_H_

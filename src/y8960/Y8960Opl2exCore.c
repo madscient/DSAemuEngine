@@ -820,10 +820,13 @@ static INLINE int16_t calc_slot_snare(Y8960OPL *opl) {
   return to_linear(slot->wave_table[phase], slot, 0);
 }
 
+/* The Y8960's RTL takes 080h / 280h here, as Nuked-OPL3 does. A real YM3812 or
+** Y8950 takes 100h / 300h, the values of emu8950 (measured on both chips for
+** openMSX PR #2294: the level against SD, and silence with waveform 3). */
 static INLINE int16_t calc_slot_cym(Y8960OPL *opl) {
   Y8960OPL_SLOT *slot = &(opl->slot[SLOT_CYM]);
 
-  uint32_t phase = opl->short_noise ? _PD(0x300) : _PD(0x100);
+  uint32_t phase = opl->short_noise ? _PD(0x280) : _PD(0x080);
 
   return to_linear(slot->wave_table[phase], slot, 0);
 }
@@ -921,7 +924,15 @@ static void update_output(Y8960OPL *opl) {
     }
   } else {
     if (!(opl->mask & Y8960OPL_MASK_BD)) {
-      out[9] = _RO(calc_fm(opl, 6));
+      /* With CON = 1 the BD is the carrier alone: the modulator still runs
+      ** (its feedback goes on) but stays out of the output, as on a real
+      ** YM3812 / Y8950 and in the Y8960's RTL. emu8950 adds it in. */
+      if (opl->ch_alg[6]) {
+        calc_slot_mod(opl, 6);
+        out[9] = _RO(calc_slot_car(opl, 6, 0));
+      } else {
+        out[9] = _RO(calc_fm(opl, 6));
+      }
     }
   }
   update_noise(opl, 14);
@@ -1229,12 +1240,26 @@ static void set_pan(Y8960OPL *opl, int32_t index, uint8_t pan) {
   }
 }
 
+static const int32_t stbl[32] = {0,  2,  4,  1,  3,  5,  -1, -1, 6,  8,  10, 7,  9,  11, -1, -1,
+                                 12, 14, 16, 13, 15, 17, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+
+/* The Y8960's RTL keeps every write to E0h-F5h and applies b5 of 01h at the
+** output: while b5 is 0 all slots are sines, and setting it brings the kept
+** waveforms back. emu8950 drops the writes made while b5 is 0. */
+static void update_waveform_select(Y8960OPL *opl) {
+  int32_t i;
+  for (i = 0; i < 0x16; i++) {
+    const int32_t s = stbl[i];
+    if (s >= 0) {
+      opl->slot[s].patch->WS = (opl->reg[0x01] & 0x20) ? (opl->reg[0xe0 + i] & 3) : 0;
+      request_update(&(opl->slot[s]), UPDATE_WS);
+    }
+  }
+}
+
 void Y8960OPL_writeReg(Y8960OPL *opl, uint32_t reg, uint8_t data) {
 
   int32_t s, c;
-
-  static int32_t stbl[32] = {0,  2,  4,  1,  3,  5,  -1, -1, 6,  8,  10, 7,  9,  11, -1, -1,
-                             12, 14, 16, 13, 15, 17, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 
   reg = reg & 0xff;
 
@@ -1252,7 +1277,9 @@ void Y8960OPL_writeReg(Y8960OPL *opl, uint32_t reg, uint8_t data) {
 
   if (reg == 0x01) {
 
-    opl->test_flag = data;
+    /* The Y8960's RTL reads only b5 (waveform select) of 01h; the test bits
+    ** do nothing, so test_flag stays 0. */
+    update_waveform_select(opl);
 
   } else if (reg == 0x04) {
 
@@ -1261,6 +1288,17 @@ void Y8960OPL_writeReg(Y8960OPL *opl, uint32_t reg, uint8_t data) {
     }
     if (data & 0x02) {
       latch_timer2(opl);
+    }
+    /* In the Y8960's RTL, writing a timer's mask bit also clears its flag, so
+    ** unmasking later does not bring an old overflow back. */
+    if (data & 0x40) {
+      opl->status &= ~0x40;
+    }
+    if (data & 0x20) {
+      opl->status &= ~0x20;
+    }
+    if (opl->adpcm) {
+      Y8960OPL_ADPCM_writeFlagControl(opl->adpcm, data);
     }
 
   } else if (0x07 <= reg && reg <= 0x12) {
@@ -1339,20 +1377,26 @@ void Y8960OPL_writeReg(Y8960OPL *opl, uint32_t reg, uint8_t data) {
     opl->pm_mode = (data >> 6) & 1;
 
   } else if (0xe0 <= reg && reg < Y8960OPL_PAN_REG_BASE) {
-    if (opl->reg[0x01] & 0x20) {
-      s = stbl[reg - 0xe0];
-      if (s >= 0) {
-        opl->slot[s].patch->WS = data & 3;
-        request_update(&(opl->slot[s]), UPDATE_WS);
-      }
+    s = stbl[reg - 0xe0];
+    if (s >= 0) {
+      opl->slot[s].patch->WS = (opl->reg[0x01] & 0x20) ? (data & 3) : 0;
+      request_update(&(opl->slot[s]), UPDATE_WS);
     }
   } else if (Y8960OPL_PAN_REG_BASE <= reg) {
     set_pan(opl, reg - Y8960OPL_PAN_REG_BASE, data);
   }
 }
 
-uint8_t Y8960OPL_readIO(Y8960OPL *opl) { return opl->reg[opl->adr]; }
+/* The Y8960's RTL answers a read of the data port with the ADPCM data for
+** 0Fh and FFh for every other register. */
+uint8_t Y8960OPL_readIO(Y8960OPL *opl) {
+  if (opl->adr == 0x0f && opl->adpcm) {
+    return Y8960OPL_ADPCM_readData(opl->adpcm);
+  }
+  return 0xff;
+}
 
+/* Bits 2 and 1 read 1, as in the Y8960's RTL. */
 uint8_t Y8960OPL_status(Y8960OPL *opl) {
   uint8_t status = opl->status;
 
@@ -1361,6 +1405,7 @@ uint8_t Y8960OPL_status(Y8960OPL *opl) {
   }
 
   status &= ~(opl->reg[0x04] & 0x78); // IRQ MASK
+  status |= 0x06;
 
   if (status & 0x78) {
     return status | 0x80; // IRQ=1

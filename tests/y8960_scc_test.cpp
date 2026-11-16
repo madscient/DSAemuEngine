@@ -6,6 +6,10 @@
 // エンジンでは SCCEX チップになり、api_test が定位のレジスタまでを確かめる。
 // ここでは、エンジンが使わない SCC+ の型と quality 0 の経路を含めて、素の emu2212 と
 // 同じ書き込みをして出力を突き合わせる。
+//
+// フォークはレート変換の比を正確に保つので、素の emu2212 と同じ音になるのは、emu2212 の
+// 比も正確になるクロックとレート (clock / 2 と rate がともに 2^31 を割り切る) に限る。
+// 突き合わせはその組で行い、3.579545 MHz での音程は testPitch で別に見る。
 
 #include "Y8960SccCore.h"
 #include "emu2212.h"
@@ -26,9 +30,9 @@ void check(const std::string& what, bool ok) {
     if (!ok) ++g_fails;
 }
 
-constexpr uint32_t kClock = 3579545;
-constexpr uint32_t kRate = 48000;
-constexpr int kFrames = 4800;  // 0.1 秒
+constexpr uint32_t kClock = 4194304;  // clock / 2 = 2^21
+constexpr uint32_t kRate = 32768;     // 2^15
+constexpr int kFrames = 4800;
 
 // 中央の倍率 cos(pi/4)
 constexpr double kCentreGain = 0.70710678118654752;
@@ -187,8 +191,8 @@ void testPan(bool plus, const char* name) {
     Stereo center = playFork(f, regs);
     check(n + ": every channel is centred until a position is written",
           center.l == center.r && rms(center.l) > 100.0);
-    check(n + ": pan 128 is the centre, and so is the undefined 0",
-          playFork(f, regs, panAll(128)) == center && playFork(f, regs, panAll(0)) == center);
+    check(n + ": pan 128 is the centre, and the undefined 0 is hard left like 1",
+          playFork(f, regs, panAll(128)) == center && playFork(f, regs, panAll(0)) == left);
     check(n + ": the centre is equal power (cos 45 degrees each side)",
           std::fabs(rms(center.l) / rms(plain) - kCentreGain) < 0.01);
 
@@ -284,6 +288,77 @@ void testEdges() {
           rms(plain0) > 100.0 && left0.l == plain0 && allZero(left0.r));
 }
 
+// 上向きのゼロ交差から周波数を測る。最初の 0.1 秒は飛ばす
+template <class Next>
+double measureFrequency(uint32_t rate, double seconds, Next next) {
+    const long total = (long)(rate * seconds);
+    double first = -1.0, last = -1.0;
+    long cycles = 0;
+    int32_t prev = next();
+    for (long n = 1; n < total; ++n) {
+        const int32_t s = next();
+        if (n > (long)rate / 10 && prev < 0 && s >= 0) {
+            const double t = (double)(n - 1) + (double)(-prev) / (double)(s - prev);
+            if (first < 0.0) first = t;
+            else ++cycles;
+            last = t;
+        }
+        prev = s;
+    }
+    return cycles / ((last - first) / rate);
+}
+
+// 3.579545 MHz・48 kHz で、矩形波の音程が clock / (32 × (TP + 1)) どおりになる。
+// 素の emu2212 は 2^31 / (clock / 2) の切り捨てで 0.07% 高い
+void testPitch() {
+    const uint32_t clock = 3579545, rate = 48000, tp = 427;
+    const double expected = clock / (32.0 * (tp + 1));
+    const Regs regs = {
+        { 0x80, (uint8_t)(tp & 0xFF) }, { 0x81, (uint8_t)(tp >> 8) },
+        { 0x8A, 15 }, { 0x8F, 0x01 },
+    };
+    Regs wave;
+    for (int i = 0; i < 32; ++i) wave.push_back({ (uint16_t)i, (uint8_t)(i < 16 ? 0x7F : 0x80) });
+
+    Y8960SCC* fork = Y8960SCC_new(clock, rate);
+    Y8960SCC_set_type(fork, Y8960SCC_STANDARD);
+    Y8960SCC_set_quality(fork, 1);
+    Y8960SCC_reset(fork);
+    activate(false, [&](uint32_t a, uint32_t v) { Y8960SCC_write(fork, a, v); });
+    for (const Reg& r : wave) Y8960SCC_write(fork, 0x9800 + r.off, r.val);
+    for (const Reg& r : regs) Y8960SCC_write(fork, 0x9800 + r.off, r.val);
+    const double forkHz = measureFrequency(rate, 2.0, [&] { return (int32_t)Y8960SCC_calc(fork); });
+    Y8960SCC_delete(fork);
+
+    SCC* plain = SCC_new(clock, rate);
+    SCC_set_type(plain, SCC_STANDARD);
+    SCC_set_quality(plain, 1);
+    SCC_reset(plain);
+    activate(false, [&](uint32_t a, uint32_t v) { SCC_write(plain, a, v); });
+    for (const Reg& r : wave) SCC_write(plain, 0x9800 + r.off, r.val);
+    for (const Reg& r : regs) SCC_write(plain, 0x9800 + r.off, r.val);
+    const double plainHz = measureFrequency(rate, 2.0, [&] { return (int32_t)SCC_calc(plain); });
+    SCC_delete(plain);
+
+    check("at 3.579545 MHz and 48 kHz the pitch is clock / (32 (TP + 1))",
+          std::fabs(forkHz / expected - 1.0) < 1e-4);
+    check("  (the plain emu2212 plays 0.07% sharp there)", plainHz / expected - 1.0 > 5e-4);
+}
+
+// 標準の SCC の配置で、9890h-989Fh は 9880h-988Fh のミラー
+void testMirror() {
+    Regs wave, mirrored;
+    for (const Reg& r : notes(false)) {
+        if (r.off < 0x80) wave.push_back(r);
+        else mirrored.push_back({ (uint16_t)(r.off + 0x10), r.val });
+    }
+    std::vector<Reg> both = wave;
+    both.insert(both.end(), mirrored.begin(), mirrored.end());
+    check("9890h-989Fh write the same registers as 9880h-988Fh",
+          playFork(Fork{}, both) == playFork(Fork{}, notes(false)));
+    check("  (the plain emu2212 drops them)", allZero(playPlain(false, both)));
+}
+
 }  // namespace
 
 int main() {
@@ -292,6 +367,8 @@ int main() {
     testPan(false, "SCC");
     testPan(true, "SCC+");
     testEdges();
+    testPitch();
+    testMirror();
 
     std::printf("%s (%d failed)\n", g_fails ? "FAILED" : "PASSED", g_fails);
     return g_fails ? 1 : 0;

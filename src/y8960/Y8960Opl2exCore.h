@@ -8,8 +8,16 @@
    symbol is renamed with a Y8960 prefix because the unmodified emu8950 is
    linked into the same binary for the Y8950 / OPL / OPL2 chips.
 
-   The ADPCM has no sample ROM, so bit 0 of register 08h is ignored, and no
-   SP-OFF, so bit 3 of register 07h is ignored too. Its
+   Where the Y8960 differs from a real YM3812 / Y8950, the fork follows the
+   Y8960's RTL (hra1129/Y8960_Cartridge) unless the RTL is plainly wrong. In
+   the FM part: the top cymbal takes the phases 080h / 280h, register 01h
+   keeps only b5, writes to E0h-F5h are kept while b5 is 0 and applied when
+   it is set, the status reads 1 in bits 2 and 1, and reading the data port
+   gives the ADPCM data for 0Fh and FFh otherwise. With the rhythm on and
+   CON = 1 the BD is the carrier alone, which the real chips and the RTL
+   share and emu8950 does not.
+
+   The ADPCM follows the RTL and is rewritten (see Y8960Opl2exAdpcm.c). Its
    sample memory is a list of blocks handed in from outside
    (Y8960OPL_setADPCMMemoryMap), because the cartridge's two circuits divide
    one 256KB SRAM between them.
