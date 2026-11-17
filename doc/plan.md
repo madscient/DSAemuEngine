@@ -2797,7 +2797,7 @@ emu76489#1（ノイズの周波数）とは別の件。README の `DCSG` の節�
 | CY の位相の定数 | 100h / 300h | 080h / 280h（Nuked-OPL3 と同じ） | 100h / 300h（`calc_slot_cym`） | 実物と一致、RTL と**食い違う** |
 | リズム音への波形選択 | 5 音すべてに掛かる | SD・TT・CY に掛かる（v0.9.12 の実機で測定。HH は測っていない）。`jtopl_op.v` はスロットごとの波形にリズムの例外を持たない | 掛かる（各スロットの `wave_table`） | 一致 |
 | `01h` の b5（WSE）が 0 の間の `E0h`-`F5h` | 測っていない | 書き込みは憶え、出力で b5 を掛ける（`jtopl_mmr.v` の `up_wav` は b5 を見ず、`jtopl_reg.v` が `wave_mode` を掛ける） | 書き込みを捨てる | **食い違う**（§6.3） |
-| EG | Nuked-OPL3 の規則 | v0.9.15 で Nuked-OPL3 に合わせた。残差はアタックの丸め、即時アタックの範囲、NTS を見ない、`eg_off` で 1FFh へ飛ばない | emu8950 のまま | 比べていない |
+| EG | Nuked-OPL3 の規則 | v0.9.15 で Nuked-OPL3 に合わせた。残差はアタックの丸め、即時アタックの範囲、NTS を見ない、`eg_off` で 1FFh へ飛ばない | emu8950 のまま | 減衰・リリースのレートと KSR（NTS = 0）は Nuked-OPL3 の規則と一致（§10.8 の #19 の項）。アタック、NTS = 1、`eg_off` は比べていない |
 | 電源投入の直後 | 鍵を押していないスロットは鳴らない | 18 のうち 17 スロットが鳴る位置にある（openMSX_Y8960 の測定。作者に知らせてある） | リセットで消音 | RTL が実物と違う |
 
 ### 10.4 `OPL2EX` の ADPCM
@@ -2882,10 +2882,29 @@ RTL の係数の表を写さない。
 
 - jotego/jtopl#17（リズム時の HH・TOM に FB を掛けない）と #18（FB の 2 つの出力の和が 13 ビットで
   溢れる）: どちらも open、コメント 0（**確認済み**: `gh issue view`、2026-11-16）。Y8960 の RTL では
-  v0.9.15・v0.9.16 で直っている。`OPL2EX` はどちらにも当たらない（§10.3）。2026-11-17 にも両方とも open、コメント 0、更新は 2026-11-14 のままだった（**確認済み**: `gh issue list -R jotego/jtopl --state all`、2026-11-17）。投稿者は madscient（この repo の所有者）
-- jotego/jtopl#19（"Envelope: decay steps twice as often, release rate is 4*RR+2, key scaling is halved"。2026-11-14 に madscient が出した）は、2026-11-15 15:02:23 に閉じた（stateReason COMPLETED）。閉じたのは PR #20「fix(jtopl): Correct envelope rates」（投稿は jt-codex。15:02:21 にマージ）（**確認済み**: `gh issue view 19`、`gh pr list`、2026-11-17）。jt-codex のコメントは、Yamaha の応用マニュアル、Nuked-OPL3、ymfm の規則に照らして #20 の修正を支持し、#20 の RTL を Icarus で動かして 0→960 の経過時間を表と比べた。速いレートの段と攻撃の時間は、ハードウェアか別の確かめが要ると書いている（同コメント。こちらでは再現していない）
-- 同じ投稿者の open の issue が 2 件ある。#21（NOTE SEL が KSR の区切りを選ばない）と #22（アタックの時間が YM3812 の表と違うかもしれない）。タイトルだけ確認。こちらの報告ではない（**確認済み**: `gh issue list`）
-- 未確認の候補: #19 の指摘（歩、RR、KSR）が `OPL2EX` のエンベロープ（emu8950 由来）にも当たるかは、この文書に無く、読んでいない。決めるには emu8950 のエンベロープと YM3812 の表を突き合わせる要がある
+  v0.9.15・v0.9.16 で直っている。`OPL2EX` はどちらにも当たらない（§10.3）。2026-11-17 にも両方とも
+  open、コメント 0、更新は 2026-11-14 のまま（**確認済み**: `gh issue list -R jotego/jtopl --state all`）
+- jotego/jtopl#19（"Envelope: decay steps twice as often, release rate is 4*RR+2, key scaling is halved"。
+  #17・#18 と同じ 2026-11-14 に出した）は、2026-11-15 15:02:23Z に PR #20「fix(jtopl): Correct envelope
+  rates」（jt-codex。15:02:21Z にマージ）で閉じた（**確認済み**: `gh issue view 19`、`gh pr list`、2026-11-17）。
+  jt-codex のコメントは、Yamaha の応用マニュアル、Nuked-OPL3、ymfm の規則に照らして #20 を支持し、#20 の
+  RTL を Icarus で動かして 0→960 の経過時間を表と比べた。速いレートとアタックは、実物か、別に確かめた
+  参照で見る要があると書いている（こちらでは再現していない）
+- #19 と PR #20 は jtopl の本家の話で、`OPL2EX` に関わるのは Y8960 の RTL が取り込んだときだけ（RTL は
+  自前の `opl2_patch/` を持つ。§10.1）。RTL の EG は v0.9.15 で Nuked-OPL3 の規則に合わせてある（§10.3）
+- #19 の 3 点は emu8950 に当たらない（**確認済み(読解)**、2026-11-17。emu8950 そのものは走らせていない）。
+  emu8950 の EG は、実効レートが 4 × R + rks（リリースも同じ式で +2 が無い）、rks は KSR = 1 で ksv
+  （ブロック × 2 + F-num の b9）、KSR = 0 で ksv >> 2。内部の 1 サンプル（clock / 72）ごとに `eg_counter` を
+  進め、レート 48 未満では 2^(12 − rate_h) サンプルに 1 回、平均 (4 + rate_l) / 8 歩（1 歩 0.1875 dB）を
+  足す（`emu8950.c` の `makeRksTable`・`commit_slot_update`・`calc_envelope`・`eg_step_tables`。
+  `OPL2EX` のフォークも同じ行）。この式で #19 の試験条件の傾きを出すと、#19 の表の「Nuked rules」の列と
+  7 試験とも一致し（比 1.000）、YM3812 の実測とは 0.3〜1.9% の差だった（Python で計算）。素の `OPL2` /
+  `Y8950`（正は実物）にも `OPL2EX`（正は RTL。§4.7）にも、#19 から直すものは無い
+- jt-codex が 2026-11-15 に出した #21（"YM3812 NOTE SEL does not select the key-scaling split"）と #22
+  （"Envelope attack timing may differ from YM3812 rate table"）は open、コメント 0。こちらの報告ではない。
+  題名から見て、§10.3 の EG の行の RTL の残差（NTS を見ない、アタック）と同じところを指す。本文は読んで
+  いない。emu8950 の NTS = 1 の ksv は、F-num の b9 と b8 の積を使う（`makeRksTable`。**確認済み(読解)**）。
+  実物とも RTL とも比べていない
 - 出す候補（ユーザーの判断待ち。§10.9）: emu8950 に、リズム時の BD の CON = 1（実物はキャリアだけ）。
   emu2212 に、音程（§10.6）と `9890h`-`989Fh` のミラー（§10.5）
 - 2026-11-16 に 3 件とも出した（§9.6）
