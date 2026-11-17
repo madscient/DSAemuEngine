@@ -2882,7 +2882,10 @@ RTL の係数の表を写さない。
 
 - jotego/jtopl#17（リズム時の HH・TOM に FB を掛けない）と #18（FB の 2 つの出力の和が 13 ビットで
   溢れる）: どちらも open、コメント 0（**確認済み**: `gh issue view`、2026-11-16）。Y8960 の RTL では
-  v0.9.15・v0.9.16 で直っている。`OPL2EX` はどちらにも当たらない（§10.3）
+  v0.9.15・v0.9.16 で直っている。`OPL2EX` はどちらにも当たらない（§10.3）。2026-11-17 にも両方とも open、コメント 0、更新は 2026-11-14 のままだった（**確認済み**: `gh issue list -R jotego/jtopl --state all`、2026-11-17）。投稿者は madscient（この repo の所有者）
+- jotego/jtopl#19（"Envelope: decay steps twice as often, release rate is 4*RR+2, key scaling is halved"。2026-11-14 に madscient が出した）は、2026-11-15 15:02:23 に閉じた（stateReason COMPLETED）。閉じたのは PR #20「fix(jtopl): Correct envelope rates」（投稿は jt-codex。15:02:21 にマージ）（**確認済み**: `gh issue view 19`、`gh pr list`、2026-11-17）。jt-codex のコメントは、Yamaha の応用マニュアル、Nuked-OPL3、ymfm の規則に照らして #20 の修正を支持し、#20 の RTL を Icarus で動かして 0→960 の経過時間を表と比べた。速いレートの段と攻撃の時間は、ハードウェアか別の確かめが要ると書いている（同コメント。こちらでは再現していない）
+- 同じ投稿者の open の issue が 2 件ある。#21（NOTE SEL が KSR の区切りを選ばない）と #22（アタックの時間が YM3812 の表と違うかもしれない）。タイトルだけ確認。こちらの報告ではない（**確認済み**: `gh issue list`）
+- 未確認の候補: #19 の指摘（歩、RR、KSR）が `OPL2EX` のエンベロープ（emu8950 由来）にも当たるかは、この文書に無く、読んでいない。決めるには emu8950 のエンベロープと YM3812 の表を突き合わせる要がある
 - 出す候補（ユーザーの判断待ち。§10.9）: emu8950 に、リズム時の BD の CON = 1（実物はキャリアだけ）。
   emu2212 に、音程（§10.6）と `9890h`-`989Fh` のミラー（§10.5）
 - 2026-11-16 に 3 件とも出した（§9.6）
