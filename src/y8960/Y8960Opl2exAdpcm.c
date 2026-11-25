@@ -4,7 +4,7 @@
 /*
    Started as a fork of emu8950 v1.1.4 (emuadpcm.c) for the Y8960 cartridge,
    2026 by madscient. Rewritten in 2026 to follow the behaviour of the
-   Y8960's RTL (hra1129/Y8960_Cartridge, v0.9.16), which wraps the ADPCM-B of
+   Y8960's RTL (hra1129/Y8960_Cartridge, v0.9.17), which wraps the ADPCM-B of
    JT12 in a Y8950 style register interface. No RTL code is taken over; only
    the API and the list of memory blocks remain from the emu8950 fork.
 
@@ -24,8 +24,9 @@
      over with a cleared decoder. A START written while playing restarts from
      the start address without clearing the decoder, which takes one more
      nibble from the old position first.
-   - PCM BSY is the START bit, so it also drops at the end of a one-shot
-     sample. The IRQ reset of 04h leaves it alone.
+   - PCM BSY repeats b7 of the last write to 07h, as on a Y8950. It stays up
+     when a one-shot sample ends and when RESET comes with START. The IRQ
+     reset of 04h leaves it alone.
    - 12h is 255 after a reset.
    - The decoder saturates to 16 bits. The output is the linear interpolation
      between the last two decoded values, weighted by the DELTA-N
@@ -154,6 +155,7 @@ void Y8960OPL_ADPCM_reset(Y8960OPL_ADPCM *_this) {
 
   _this->eos = 0;
   _this->buf_rdy = 1;
+  _this->pcm_bsy = 0;
 
   _this->mem_ptr = 0;
   _this->read_delay = 0;
@@ -203,7 +205,7 @@ static uint32_t fetch_nibble(Y8960OPL_ADPCM *_this) {
 
 /* EOS comes from an edge: set_flag stays 1 after a sample ends and drops only
 ** when the address moves on. So after a sample has ended, a start address past
-** the stop address raises no EOS, and START (PCM BSY) then stays up. */
+** the stop address raises no EOS, and START then stays up. */
 static void end_of_sample(Y8960OPL_ADPCM *_this) {
   const int edge = !_this->set_flag;
 
@@ -313,10 +315,9 @@ int16_t Y8960OPL_ADPCM_calc(Y8960OPL_ADPCM *_this) {
     gain = 0;
 
   /* The filter runs at the 16 bit scale of the RTL. The RTL adds the ADPCM
-  ** >> 2 to the FM, whose operators span +-4095; the FM here spans half of
-  ** that (_MO), hence >> 3: a full scale ADPCM is about twice a melody
-  ** channel. */
-  return (int16_t)(lowpass(_this, (int16_t)gain) >> 3);
+  ** >> 3 to the FM, whose operators span +-4095; the FM here spans half of
+  ** that (_MO), hence >> 4: a full scale ADPCM is about one melody channel. */
+  return (int16_t)(lowpass(_this, (int16_t)gain) >> 4);
 }
 
 void Y8960OPL_ADPCM_writeReg(Y8960OPL_ADPCM *_this, uint32_t adr, uint32_t data) {
@@ -325,6 +326,7 @@ void Y8960OPL_ADPCM_writeReg(Y8960OPL_ADPCM *_this, uint32_t adr, uint32_t data)
 
   switch (adr) {
   case 0x07:
+    _this->pcm_bsy = (data & R07_START) != 0;
     if (data & R07_RESET) {
       _this->start = _this->rec = _this->memory_data = _this->repeat = _this->sp_off = 0;
       _this->mem_ptr = 0;
@@ -442,7 +444,7 @@ uint8_t Y8960OPL_ADPCM_readData(Y8960OPL_ADPCM *_this) {
 
 uint8_t Y8960OPL_ADPCM_status(Y8960OPL_ADPCM *_this) {
   return (uint8_t)((_this->eos ? STATUS_EOS : 0) | (_this->buf_rdy ? STATUS_BUF_RDY : 0) |
-                   (_this->start ? STATUS_PCM_BSY : 0));
+                   (_this->pcm_bsy ? STATUS_PCM_BSY : 0));
 }
 
 void Y8960OPL_ADPCM_resetStatus(Y8960OPL_ADPCM *_this) {

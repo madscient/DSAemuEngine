@@ -3,7 +3,7 @@
 //   y8960_adpcm_test
 // 失敗した項目があれば終了コードが 0 以外になる。
 //
-// 振る舞いは Y8960 の RTL (hra1129/Y8960_Cartridge v0.9.16 の adpcm_patch) に合わせてある。
+// 振る舞いは Y8960 の RTL (hra1129/Y8960_Cartridge v0.9.17 の adpcm_patch) に合わせてある。
 // 状態レジスタ、0Fh の読み出し、復号器の中の値は FmEngineApi から見えないので、ここで見る。
 // 期待値は、RTL の式に生の値を入れて手で計算したものと、LPF の設計値 (作者の作業履歴の
 // 1 kHz 0.0 dB、4 kHz -1.4 dB、8 kHz -28.9 dB) から作る。
@@ -84,6 +84,8 @@ public:
     }
     uint8_t status() { return Y8960OPL_ADPCM_status(core_); }
     bool bsy() { return (status() & kBsy) != 0; }
+    // 再生の状態 (RTL の reg_start)。PCM BSY は 07h に書いた b7 を写すだけで、これとは別に動く
+    bool started() const { return core_->start != 0; }
     bool eos() { return (status() & kEos) != 0; }
     bool bufRdy() { return (status() & kBufRdy) != 0; }
     void resetStatus() { Y8960OPL_ADPCM_resetStatus(core_); }
@@ -129,7 +131,8 @@ void testBsy() {
         Adpcm d;
         d.write(0x07, kPlay);
         bool ended = d.runToEnd();
-        check("PCM BSY drops when a one-shot sample ends", ended && !d.bsy() && d.eos());
+        check("PCM BSY stays up when a one-shot sample ends, while START drops",
+              ended && d.bsy() && d.eos() && !d.started());
     }
     {
         Adpcm d;
@@ -149,13 +152,14 @@ void testBsy() {
         Adpcm d;
         d.write(0x07, kPlay);
         d.run(5);
-        d.write(0x07, kStart | kReset);
-        check("RESET wins over START: 07h = 81h drops PCM BSY", !d.bsy() && !d.eos());
+        d.write(0x07, kPlay | kReset);
+        check("07h = A1h: RESET stops the playback, PCM BSY shows the START written",
+              d.bsy() && !d.started() && !d.eos());
     }
     {
         Adpcm d;
         d.write(0x07, kStart | kReset);
-        check("07h = 81h does not raise PCM BSY while stopped", !d.bsy());
+        check("07h = 81h raises PCM BSY while stopped, without playing", d.bsy() && !d.started());
     }
     {
         Adpcm d;
@@ -169,9 +173,12 @@ void testBsy() {
     {
         Adpcm d;
         d.write(0x07, kPlay);
-        d.runToEnd();
+        const bool upAfterEnd = d.runToEnd() && d.bsy();
+        d.write(0x07, 0x00);
+        const bool dropped = !d.bsy();
         d.write(0x07, kPlay);
-        check("START raises PCM BSY again after the sample ended", d.bsy());
+        check("after a one-shot sample ended, 07h = 00h drops PCM BSY and START raises it again",
+              upAfterEnd && dropped && d.bsy() && d.started());
     }
     {
         Adpcm d;
@@ -290,16 +297,16 @@ void testRange() {
     check("REPEAT starts over with a cleared decoder", first == 238 && cleared && r.nextDecoded() == 238);
 
     // EOS は終わりの印が 0 から 1 になるときだけ立つ。印は番地が進むと 0 に戻るので、一度
-    // 終わった後に開始番地を停止番地より後ろにすると、EOS が立たず START (PCM BSY) も残る
+    // 終わった後に開始番地を停止番地より後ろにすると、EOS が立たず START も残る
     Adpcm e(64, 0x0000);
     e.write(0x07, kPlay);
-    const bool ended = e.runToEnd() && !e.bsy();
+    const bool ended = e.runToEnd() && !e.started();
     e.resetStatus();
     e.setRange(2, 1);
     e.write(0x07, kPlay);
     e.run(50);
-    check("after a sample ended, start past stop raises no EOS and leaves PCM BSY up",
-          ended && !e.eos() && e.bsy());
+    check("after a sample ended, start past stop raises no EOS and leaves START up",
+          ended && !e.eos() && e.started());
 }
 
 // --- 出力 ---
@@ -339,7 +346,7 @@ double amplitude(const std::vector<double>& v, double f, double rate) {
 
 // f のサイン波を ADPCM にして、ADPCM のレート (DELTA-N で決まる) で鳴らし、
 // 出力の f の成分と、復号した値の f の成分の比を dB で返す。出力は 12h = 255 の倍率
-// (255 / 256) と、FM に対する水準 (1 / 8) を掛けた値なので、その分を戻して比べる
+// (255 / 256) と、FM に対する水準 (1 / 16) を掛けた値なので、その分を戻して比べる
 double response(double f, uint16_t delta) {
     const double adpcmRate = kNativeRate * delta / 65536.0;
     const int nibbles = 8192;
@@ -357,7 +364,7 @@ double response(double f, uint16_t delta) {
     std::vector<double> out;
     for (int i = 0; i < samples; ++i) {
         const int16_t s = d.calc();
-        if (i >= samples / 4) out.push_back(s * 8.0 * 256.0 / 255.0);
+        if (i >= samples / 4) out.push_back(s * 16.0 * 256.0 / 255.0);
     }
     std::vector<double> in(enc.decoded.begin() + nibbles / 4, enc.decoded.end());
     return 20.0 * std::log10(amplitude(out, f, kNativeRate) / amplitude(in, f, adpcmRate));
@@ -379,20 +386,20 @@ void testOutput() {
     }
     {
         // 復号器が 32767 に張り付いた直流: 12h = 255 で (32767 x 255) >> 8 = 32639、LPF の直流の
-        // 倍率は 1。RTL は FM (演算子 ±4095) に ADPCM >> 2 を足し、ここの FM はその半分の幅
-        // なので、出力は 32639 >> 3 = 4079 (旋律 1 チャンネルの最大 2047 の約 2 倍)
+        // 倍率は 1。RTL は FM (演算子 ±4095) に ADPCM >> 3 を足し、ここの FM はその半分の幅
+        // なので、出力は 32639 >> 4 = 2039 (旋律 1 チャンネルの最大 2047 とほぼ同じ)
         Adpcm d(64, 0x000F);
         for (auto& b : d.mem()) b = 0x77;
         d.write(0x07, kPlay);
         d.run(80);
-        check("full scale ADPCM puts out 32639 >> 3 = 4079, twice a melody channel", d.calc() == 4079);
+        check("full scale ADPCM puts out 32639 >> 4 = 2039, about one melody channel", d.calc() == 2039);
     }
     {
         Adpcm d(64, 0x000F);
         d.write(0x07, kPlay | kSpOff);
         bool zero = true;
         for (int i = 0; i < 100; ++i) zero = zero && d.calc() == 0;
-        check("SP-OFF mutes the output and keeps playing", zero && d.bsy());
+        check("SP-OFF mutes the output and keeps playing", zero && d.started());
     }
     {
         // 止めた直後は LPF に残ったサンプルが尾を引き、25 サンプルで抜けて 0 になる
@@ -495,7 +502,7 @@ void testCpuSynthesis() {
     const int32_t again = d.nextDecoded();
     d.run(200);
     check("  without a new byte the last one is used again, and there is no EOS",
-          again > afterLower && !d.eos() && d.bsy());
+          again > afterLower && !d.eos() && d.started());
 }
 
 // --- メモリの読み書き ---

@@ -39,8 +39,10 @@ typedef struct __Y8960OPL_ADPCM {
   uint8_t volume; /* 12h */
   uint8_t data;   /* 0Fh, the last value written */
 
-  /* status flags, before the masks of 04h */
-  uint8_t eos, buf_rdy;
+  /* status flags, before the masks of 04h. PCM BSY is not START: it repeats
+  ** b7 of the last write to 07h, so it stays up after a one-shot sample ends
+  ** and when RESET comes with START. */
+  uint8_t eos, buf_rdy, pcm_bsy;
 
   /* CPU access to the sample memory (07h = 60h / 20h), a byte address */
   uint32_t mem_ptr;
